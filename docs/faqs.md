@@ -9,7 +9,7 @@
 5. [Can I use the containers in GitHub Actions or GitLab CI pipelines?](#5-can-i-use-the-containers-in-github-actions-or-gitlab-ci-pipelines)
 6. [Why is `unattended=True` (or similar tokens) set in the config file?](#6-why-is-unattendedtrue-or-similar-tokens-set-in-the-config-file)
 7. [What host OS do I need to run these images?](#7-what-host-os-do-i-need-to-run-these-images)
-8. [What comes pre-installed on the images?](#8-what-comes-preinstalled-on-the-images)
+8. [What comes pre-installed on the images?](#8-what-comes-pre-installed-on-the-images)
 9. [I launched LabVIEW without headless mode and now LabVIEWCLI will not work, even when I pass the headless argument. What is happening?](#9-i-launched-labview-without-headless-mode-and-now-labviewcli-will-not-work-even-when-i-pass-the-headless-argument-what-is-happening)
 10. [Do I have to always pass the headless argument?](#10-do-i-have-to-always-pass-the-headless-argument)
 11. [Is there a global override that always enables headless mode for LabVIEW?](#11-is-there-a-global-override-that-always-enables-headless-mode-for-labview)
