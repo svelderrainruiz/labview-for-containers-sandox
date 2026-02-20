@@ -121,12 +121,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          docker volume rm $env:PERSIST_VOLUME_X64 | Out-Null
+          docker volume inspect $env:PERSIST_VOLUME_X64 *> $null
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Removed volume $env:PERSIST_VOLUME_X64"
+            docker volume rm $env:PERSIST_VOLUME_X64 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Removed volume $env:PERSIST_VOLUME_X64"
+            } else {
+              Write-Host "Volume $env:PERSIST_VOLUME_X64 could not be removed."
+            }
           } else {
-            Write-Host "Volume $env:PERSIST_VOLUME_X64 not removed (it may not exist)."
+            Write-Host "Volume $env:PERSIST_VOLUME_X64 not found; skipping cleanup."
           }
+          $global:LASTEXITCODE = 0
 
   build-x86:
     name: Build Windows Custom Image x86
@@ -172,9 +178,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          docker volume rm $env:PERSIST_VOLUME_X86 | Out-Null
+          docker volume inspect $env:PERSIST_VOLUME_X86 *> $null
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Removed volume $env:PERSIST_VOLUME_X86"
+            docker volume rm $env:PERSIST_VOLUME_X86 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Removed volume $env:PERSIST_VOLUME_X86"
+            } else {
+              Write-Host "Volume $env:PERSIST_VOLUME_X86 could not be removed."
+            }
           } else {
-            Write-Host "Volume $env:PERSIST_VOLUME_X86 not removed (it may not exist)."
+            Write-Host "Volume $env:PERSIST_VOLUME_X86 not found; skipping cleanup."
           }
+          $global:LASTEXITCODE = 0

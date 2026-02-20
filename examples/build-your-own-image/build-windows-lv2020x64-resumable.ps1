@@ -267,10 +267,10 @@ Ensure-NipmInstallerBootstrapper `
 
 $branchName = (& git -C $repoRoot rev-parse --abbrev-ref HEAD).Trim()
 if ($LASTEXITCODE -ne 0) {
-    throw 'Unable to determine the current git branch.'
+    Write-Warning 'Unable to determine the current git branch. Continuing without branch enforcement.'
 }
-if ($branchName -ne 'lv2020x64') {
-    throw "This script must run on branch 'lv2020x64'. Current branch: $branchName"
+elseif ($branchName -ne 'lv2020x64') {
+    Write-Warning "Recommended branch is 'lv2020x64'. Continuing on '$branchName'."
 }
 
 $dockerServerOs = (& docker version --format '{{.Server.Os}}' 2>$null).Trim()
