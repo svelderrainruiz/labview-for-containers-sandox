@@ -32,13 +32,19 @@ RUN New-Item -ItemType Directory -Path 'C:\\ni\\resources' -Force
 COPY ["Resources/Windows Resources", "C:/ni/resources/"]
 
 # Install NIPKG Manager
-RUN Start-Process -wait C:\\ni\\resources\\install.exe -ArgumentList '--passive', \
+RUN $installProcess = Start-Process -PassThru -Wait C:\\ni\\resources\\install.exe -ArgumentList '--passive', \
     '--accept-eulas',    \
     '--no-shortcuts',    \
     '--no-start-menu',   \
     '--no-desktop-icon', \
     '--no-update-check', \
-    '--prevent-reboot'
+    '--prevent-reboot';  \
+    if ($installProcess.ExitCode -ne 0) { \
+      throw ('NIPM bootstrapper exited with code ' + $installProcess.ExitCode + '.') \
+    }; \
+    if (-not (Test-Path -Path 'C:\\Program Files\\National Instruments\\NI Package Manager\\nipkg.exe')) { \
+      throw 'NIPM bootstrapper completed but nipkg.exe was not found.' \
+    }
 
 # Add NIPKG In Path
 RUN $nipkgPath = 'C:\Program Files\National Instruments\NI Package Manager'; \
@@ -46,7 +52,7 @@ RUN $nipkgPath = 'C:\Program Files\National Instruments\NI Package Manager'; \
     if ($machinePath -notlike ('*' + $nipkgPath + '*')) { \
       [Environment]::SetEnvironmentVariable('Path', ($machinePath + ';' + $nipkgPath), 'Machine') \
     }
-ENV NIPKG_EXE=C:\\Program Files\\National Instruments\\NI Package Manager\\nipkg.exe
+ENV NIPKG_EXE="C:\\Program Files\\National Instruments\\NI Package Manager\\nipkg.exe"
 
 # Fast path installs in Docker build. Resumable path sets DEFER_LV_INSTALL=1 and executes the same installer in runtime phases.
 RUN if ($env:DEFER_LV_INSTALL -eq '1') { \
