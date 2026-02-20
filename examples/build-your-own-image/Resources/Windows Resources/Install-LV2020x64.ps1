@@ -3,7 +3,6 @@ param(
     [string]$LvYear = $env:LV_YEAR,
     [string]$LvFeedLocation = $env:LV_FEED_LOCATION,
     [string]$LvCorePackage = $env:LV_CORE_PACKAGE,
-    [string]$LvViaPackage = $env:LV_VIA_PACKAGE,
     [string]$LvCliPackage = $env:LV_CLI_PACKAGE,
     [string]$LvCliPort = $env:LV_CLI_PORT,
     [string]$PersistRoot = 'C:\lv-persist',
@@ -16,7 +15,6 @@ $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrWhiteSpace($LvYear)) { $LvYear = '2020' }
 if ([string]::IsNullOrWhiteSpace($LvCorePackage)) { $LvCorePackage = 'ni-labview-2020-core-en' }
-if ([string]::IsNullOrWhiteSpace($LvViaPackage)) { $LvViaPackage = 'ni-viawin-labview-support' }
 if ([string]::IsNullOrWhiteSpace($LvCliPackage)) { $LvCliPackage = 'ni-labview-command-line-interface-x86' }
 if ([string]::IsNullOrWhiteSpace($LvCliPort)) { $LvCliPort = '3366' }
 
@@ -49,7 +47,6 @@ function Write-State {
         lv_year           = $LvYear
         lv_feed_location  = $LvFeedLocation
         lv_core_package   = $LvCorePackage
-        lv_via_package    = $LvViaPackage
         lv_cli_package    = $LvCliPackage
         lv_cli_port       = $LvCliPort
         installer_log     = $installLogPath
@@ -183,12 +180,12 @@ try {
     Invoke-Nipkg -Arguments @('feed-add', '--name', $feedName, $LvFeedLocation) -StepName 'feed-add' | Out-Null
     Invoke-Nipkg -Arguments @('feed-update') -StepName 'feed-update' | Out-Null
 
-    $availableResult = Invoke-Nipkg -Arguments @('list', '--available') -StepName 'list-available'
+    $availableResult = Invoke-Nipkg -Arguments @('list', "ni-labview-$LvYear*", 'ni-labview-command-line-interface*') -StepName 'list-available'
     $availableLines = $availableResult.Output -split "`r?`n" | Where-Object {
-        $_ -match "ni-labview-$LvYear" -or $_ -match 'ni-labview-command-line-interface' -or $_ -match 'ni-viawin-labview-support'
+        $_ -match "ni-labview-$LvYear" -or $_ -match 'ni-labview-command-line-interface'
     }
     if ($availableLines.Count -gt 0) {
-        Write-Host 'Available package IDs matching LabVIEW year/CLI/VIA:'
+        Write-Host 'Available package IDs matching LabVIEW year/CLI:'
         $availableLines | ForEach-Object {
             Write-Host $_
             Append-InstallLog -Text $_
@@ -209,7 +206,6 @@ try {
 
     $mandatoryPackages = @(
         @{ Step = 'install-core'; Package = $LvCorePackage },
-        @{ Step = 'install-via'; Package = $LvViaPackage },
         @{ Step = 'install-cli'; Package = $LvCliPackage }
     )
 
