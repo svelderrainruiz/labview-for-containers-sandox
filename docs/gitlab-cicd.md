@@ -1,4 +1,5 @@
 # GitLab CI/CD Integration
+<!-- markdownlint-disable MD013 MD060 -->
 
 This guide shows how to use the LabVIEW container images in **GitLab CI/CD** pipelines.
 The example YAML definitions mirror the [GitHub Actions workflows](https://github.com/ni/labview-for-containers/tree/main/.github/workflows) shipped with this repository.
@@ -37,7 +38,13 @@ See a live pipeline run here: [Linux pipeline on GitLab](https://gitlab.com/shiv
 Each example pipeline runs on **merge request events** and performs two steps:
 
 1. **MassCompile** — compiles the LabVIEW `Arrays` examples that ship inside the container image.
-2. **CI integration script** — mounts the repository into the container and runs the provided helper script ([`runlabview.sh`](../examples/integration-into-cicd/runlabview.sh) on Linux, [`runlabview.ps1`](../examples/integration-into-cicd/runlabview.ps1) on Windows) which performs MassCompile and VI Analyzer on the Test-VIs bundled in this repo.
+2. **CI integration script** — mounts the repository into the container and
+   runs the provided helper script
+   ([`runlabview.sh`](../examples/integration-into-cicd/runlabview.sh) on
+   Linux, [`runlabview.ps1`](../examples/integration-into-cicd/runlabview.ps1)
+   on Windows). The Linux helper performs MassCompile and VI Analyzer on
+   bundled Test-VIs, while the Windows helper in the 2020 scope performs
+   MassCompile only.
 
 ### Linux Pipeline
 
@@ -116,7 +123,7 @@ run-labview-cli-windows:
 - **Change the LabVIEW version** — edit the `LABVIEW_IMAGE` variable.
 - **Add more LabVIEWCLI operations** — append additional `docker run` commands in the `script` section.
 - **Use a private registry** — replace `nationalinstruments/labview` with your registry URL and add credentials via GitLab CI/CD variables (`Settings > CI/CD > Variables`).
-- **Artifacts** — to save reports (e.g., VI Analyzer results), add an `artifacts` block pointing to the mounted output path.
+- **Artifacts** — to save generated outputs (for example, logs or reports), add an `artifacts` block pointing to the mounted output path.
 
 ---
 

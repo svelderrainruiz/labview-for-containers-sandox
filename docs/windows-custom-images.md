@@ -41,7 +41,6 @@ Before building your own Windows image, make sure you have:
 ARG LV_YEAR=2020
 ARG LV_FEED_LOCATION=
 ARG LV_CORE_PACKAGE=ni-labview-2020-core-en
-ARG LV_VIA_PACKAGE=ni-viawin-labview-support
 ARG LV_CLI_PACKAGE=ni-labview-command-line-interface-x86
 ARG LV_CLI_PORT=3366
 ARG INSTALL_OPTIONAL_HELP=0
@@ -65,8 +64,11 @@ Use this when install completes in one pass (no reboot checkpoint):
 ```powershell
 cd .\examples\build-your-own-image
 
+$lvFeed = 'https://download.ni.com/support/nipkg/products/ni-l/' +
+  'ni-labview-2020/20.0/released'
+
 docker build -t labview-custom-windows:lv2020x64 -f Dockerfile-windows `
-  --build-arg LV_FEED_LOCATION=$env:LV2020_FEED_LOCATION `
+  --build-arg LV_FEED_LOCATION=$lvFeed `
   --build-arg LV_CLI_PORT=3366 `
   --build-arg INSTALL_OPTIONAL_HELP=0
 ```
@@ -99,8 +101,11 @@ Run:
 ```powershell
 cd .\examples\build-your-own-image
 
+$lvFeed = 'https://download.ni.com/support/nipkg/products/ni-l/' +
+  'ni-labview-2020/20.0/released'
+
 pwsh -NoProfile -File .\build-windows-lv2020x64-resumable.ps1 `
-  -LvFeedLocation $env:LV2020_FEED_LOCATION `
+  -LvFeedLocation $lvFeed `
   -PersistVolumeName vm
 ```
 
@@ -147,6 +152,11 @@ If build fails with missing feed location:
 
 - Pass `--build-arg LV_FEED_LOCATION=<feed-url>` for Dockerfile-only.
 - Pass `-LvFeedLocation <feed-url>` for the resumable script.
+- Recommended value for this 2020 scope:
+  `https://download.ni.com/support/nipkg/products/ni-l/ni-labview-2020/20.0/released`
+- Do not use local raw metadata folders such as
+  `C:\ProgramData\National Instruments\NI Package Manager\raw\...` as a direct
+  `feed-add` source; they are not valid feed URIs for this workflow.
 
 ### Port Contract Mismatch
 
@@ -174,7 +184,6 @@ Hard requirements:
 1) Keep these defaults:
    - LV_YEAR=2020
    - LV_CORE_PACKAGE=ni-labview-2020-core-en
-   - LV_VIA_PACKAGE=ni-viawin-labview-support
    - LV_CLI_PACKAGE=ni-labview-command-line-interface-x86
    - LV_CLI_PORT=3366
    - INSTALL_OPTIONAL_HELP=0
