@@ -25,9 +25,8 @@ Use this approach if you need to:
 Before building your own Windows image, make sure you have:
 
 - A Windows host with Docker configured for **Windows containers**.
-- Access to NI Package Manager (NIPKG) offline installers and feed(s).
-- NI Package Manager bootstrapper at:
-  `examples/build-your-own-image/Resources/Windows Resources/install.exe`
+- Internet access from host and container to `download.ni.com`.
+- Access to NI Package Manager (NIPKG) feeds and installers.
 - This fork's workflow files:
   `examples/build-your-own-image/Dockerfile-windows`
 - `examples/build-your-own-image/Resources/Windows Resources/Install-LV2020x64.ps1`
@@ -67,7 +66,7 @@ cd .\examples\build-your-own-image
 $lvFeed = 'https://download.ni.com/support/nipkg/products/ni-l/' +
   'ni-labview-2020/20.0/released'
 
-docker build -t labview-custom-windows:lv2020x64 -f Dockerfile-windows `
+docker build -t labview-custom-windows:2020q1-windows -f Dockerfile-windows `
   --build-arg LV_FEED_LOCATION=$lvFeed `
   --build-arg LV_CLI_PORT=3366 `
   --build-arg INSTALL_OPTIONAL_HELP=0
@@ -90,9 +89,15 @@ Script:
 
 Parameters:
 
-- `-ImageTag` default `labview-custom-windows:lv2020x64`
+- `-ImageTag` default `labview-custom-windows:2020q1-windows`
 - `-LvFeedLocation` required
 - `-PersistVolumeName` default `vm`
+- `-DnsServer` default `1.1.1.1`
+- `-NipmInstallerDownloadUrl` default
+  `https://download.ni.com/support/nipkg/products/ni-package-manager/installers/NIPackageManager26.0.0.exe`
+- `-NipmInstallerDownloadSha256` default
+  `A2AF381482F85ABA2A963676EAC436F96D69572A9EBFBAF85FF26C372A1995C3`
+- `-NipmInstallerSourcePath` optional host file override
 - `-Phase1Tag` and `-Phase2Tag` optional overrides
 - `-KeepIntermediate` optional switch
 
@@ -113,7 +118,15 @@ What the script does:
 
 1. Validates branch is `lv2020x64`.
 1. Verifies Docker is in Windows container mode.
+1. Ensures
+   `examples/build-your-own-image/Resources/Windows Resources/install.exe`
+   exists by using the first valid source:
+   - existing local file
+   - `-NipmInstallerSourcePath` (if supplied)
+   - download from `-NipmInstallerDownloadUrl`
+1. Prints SHA256 for the installer file used.
 1. Ensures the named volume exists (creates it when missing).
+1. Uses `--dns` for phase containers (default `1.1.1.1`).
 1. Builds a seed image with `DEFER_LV_INSTALL=1`.
 1. Runs phase 1 install in a container with `-v vm:C:\lv-persist`.
 1. If phase 1 exits `194`, commits phase 1 and resumes phase 2.
@@ -157,6 +170,43 @@ If build fails with missing feed location:
 - Do not use local raw metadata folders such as
   `C:\ProgramData\National Instruments\NI Package Manager\raw\...` as a direct
   `feed-add` source; they are not valid feed URIs for this workflow.
+
+### Missing Installer Bootstrapper
+
+If build fails before seed image creation due to a missing installer bootstrapper:
+
+1. Rerun with explicit download URL/SHA overrides when needed:
+
+```powershell
+$nipmUrl = 'https://download.ni.com/support/nipkg/products/' +
+  'ni-package-manager/' +
+  'installers/NIPackageManager26.0.0.exe'
+$nipmSha256 = 'A2AF381482F85ABA2A963676EAC436F96D69572A9EBFBAF85FF26C372A1995C3'
+
+pwsh -NoProfile -File .\build-windows-lv2020x64-resumable.ps1 `
+  -LvFeedLocation $lvFeed `
+  -NipmInstallerDownloadUrl $nipmUrl `
+  -NipmInstallerDownloadSha256 $nipmSha256 `
+  -PersistVolumeName vm
+```
+
+1. If download is unavailable, pass a host file directly:
+
+```powershell
+pwsh -NoProfile -File .\build-windows-lv2020x64-resumable.ps1 `
+  -LvFeedLocation $lvFeed `
+  -NipmInstallerSourcePath "D:\Installers\NIPM\install.exe" `
+  -PersistVolumeName vm
+```
+
+1. If the container cannot resolve `download.ni.com`, set a reachable DNS server:
+
+```powershell
+pwsh -NoProfile -File .\build-windows-lv2020x64-resumable.ps1 `
+  -LvFeedLocation $lvFeed `
+  -DnsServer 1.1.1.1 `
+  -PersistVolumeName vm
+```
 
 ### Port Contract Mismatch
 
