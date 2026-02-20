@@ -3,11 +3,6 @@ name: Build Windows Custom Images (Serialized x64 -> x86)
 on:
   workflow_dispatch:
     inputs:
-      runner_label:
-        description: Runner label that supports Docker Windows containers
-        required: true
-        type: string
-        default: self-hosted-windows-docker
       lv_year:
         description: LabVIEW year passed to the build script
         required: true
@@ -19,8 +14,9 @@ on:
         type: string
       x86_core_package:
         description: LabVIEW x86 core package ID (LvCorePackage)
-        required: true
+        required: false
         type: string
+        default: ""
       lv_cli_package:
         description: LabVIEW CLI package ID
         required: false
@@ -44,6 +40,14 @@ on:
         required: false
         type: boolean
         default: false
+      architecture:
+        description: Architecture scope to build
+        required: true
+        type: choice
+        options:
+          - x64
+          - x64-x86
+        default: x64
       cleanup_volumes:
         description: Remove per-run Docker persist volumes at the end
         required: false
@@ -57,7 +61,7 @@ concurrency:
 jobs:
   build-x64:
     name: Build Windows Custom Image x64
-    runs-on: ${{ inputs.runner_label }}
+    runs-on: windows-latest
     timeout-minutes: 360
     env:
       IMAGE_TAG_X64: labview-custom-windows:${{ inputs.lv_year }}q1-windows-x64-run${{ github.run_id }}
@@ -80,7 +84,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'examples/build-your-own-image/build-windows-lv-resumable.ps1'
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'examples/build-your-own-image/build-windows-lv2020x64-resumable.ps1'
           if (-not (Test-Path -Path $scriptPath -PathType Leaf)) {
             throw "Required script not found: $scriptPath"
           }
@@ -89,7 +93,6 @@ jobs:
             '-NoProfile',
             '-File', $scriptPath,
             '-LvYear', '${{ inputs.lv_year }}',
-            '-LvBitness', 'x64',
             '-LvFeedLocation', '${{ inputs.lv_feed_location }}',
             '-PersistVolumeName', $env:PERSIST_VOLUME_X64,
             '-ImageTag', $env:IMAGE_TAG_X64,
@@ -128,7 +131,8 @@ jobs:
   build-x86:
     name: Build Windows Custom Image x86
     needs: build-x64
-    runs-on: ${{ inputs.runner_label }}
+    if: ${{ inputs.architecture == 'x64-x86' }}
+    runs-on: windows-latest
     timeout-minutes: 360
     env:
       IMAGE_TAG_X86: labview-custom-windows:${{ inputs.lv_year }}q1-windows-x86-run${{ github.run_id }}
@@ -151,33 +155,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'examples/build-your-own-image/build-windows-lv-resumable.ps1'
-          if (-not (Test-Path -Path $scriptPath -PathType Leaf)) {
-            throw "Required script not found: $scriptPath"
+          if ([string]::IsNullOrWhiteSpace('${{ inputs.x86_core_package }}')) {
+            throw "x86_core_package is required when architecture='x64-x86'."
           }
 
-          $args = @(
-            '-NoProfile',
-            '-File', $scriptPath,
-            '-LvYear', '${{ inputs.lv_year }}',
-            '-LvBitness', 'x86',
-            '-LvCorePackage', '${{ inputs.x86_core_package }}',
-            '-LvFeedLocation', '${{ inputs.lv_feed_location }}',
-            '-PersistVolumeName', $env:PERSIST_VOLUME_X86,
-            '-ImageTag', $env:IMAGE_TAG_X86,
-            '-LvCliPackage', '${{ inputs.lv_cli_package }}',
-            '-LvCliPort', '${{ inputs.lv_cli_port }}',
-            '-InstallOptionalHelp', '${{ inputs.install_optional_help }}'
-          )
-
-          if ('${{ inputs.keep_intermediate }}' -eq 'true') {
-            $args += '-KeepIntermediate'
-          }
-
-          & pwsh @args
-          if ($LASTEXITCODE -ne 0) {
-            throw "x86 build failed with exit code $LASTEXITCODE"
-          }
+          throw "x86 build is deferred during phase-first x64 stabilization. Use architecture='x64' until x86 follow-up is implemented."
 
       - name: Summarize x86 image
         shell: pwsh
@@ -196,4 +178,3 @@ jobs:
           } else {
             Write-Host "Volume $env:PERSIST_VOLUME_X86 not removed (it may not exist)."
           }
-
