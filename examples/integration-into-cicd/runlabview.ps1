@@ -1,15 +1,32 @@
 param(
-    [string]$WorkspaceRoot = "C:\workspace"
+    [string]$WorkspaceRoot = "C:\workspace",
+    [string]$LabVIEWYear = "2020",
+    [string]$LabVIEWPath = ""
 )
 
+if ([string]::IsNullOrWhiteSpace($LabVIEWPath)) {
+    $LabVIEWPath = "C:\Program Files\National Instruments\LabVIEW $LabVIEWYear\LabVIEW.exe"
+}
+
 $ConfigFile    = Join-Path $WorkspaceRoot "examples\integration-into-cicd\Test-VIs\viaPassCase.viancfg"
-$LabVIEWPath   = "C:\Program Files\National Instruments\LabVIEW 2026\LabVIEW.exe"
 $ReportPath    = "C:\ContainerExamples\Results.txt"
 $MassCompileDir = Join-Path $WorkspaceRoot "examples\integration-into-cicd\Test-VIs"
 
 # Verify that the configuration file exists.
 if (-not (Test-Path -Path $ConfigFile)) {
     Write-Host "Error: Configuration file not found at $ConfigFile, exiting..." -ForegroundColor Red
+    exit 1
+}
+
+# Verify that LabVIEWPath exists.
+if (-not (Test-Path -Path $LabVIEWPath)) {
+    Write-Host "Error: LabVIEW executable not found at $LabVIEWPath, exiting..." -ForegroundColor Red
+    exit 1
+}
+
+$labviewCliCommand = Get-Command -Name LabVIEWCLI -ErrorAction SilentlyContinue
+if (-not $labviewCliCommand) {
+    Write-Host "Error: LabVIEWCLI is not available on PATH, exiting..." -ForegroundColor Red
     exit 1
 }
 
@@ -21,6 +38,7 @@ if (-not (Test-Path -Path $reportDir)) {
 
 Write-Host "Running LabVIEWCLI MassCompile with the following parameters:" -ForegroundColor Cyan
 Write-Host "DirectoryToCompile: $MassCompileDir"
+Write-Host "LabVIEWPath: $LabVIEWPath"
 
 & LabVIEWCLI `
     -LogToConsole TRUE `
