@@ -1,0 +1,180 @@
+name: Build Windows Custom Images (Serialized x64 -> x86)
+
+on:
+  workflow_dispatch:
+    inputs:
+      lv_year:
+        description: LabVIEW year passed to the build script
+        required: true
+        type: string
+        default: "2020"
+      lv_feed_location:
+        description: NI package feed URL (LvFeedLocation)
+        required: true
+        type: string
+      x86_core_package:
+        description: LabVIEW x86 core package ID (LvCorePackage)
+        required: false
+        type: string
+        default: ""
+      lv_cli_package:
+        description: LabVIEW CLI package ID
+        required: false
+        type: string
+        default: ni-labview-command-line-interface-x86
+      lv_cli_port:
+        description: LabVIEW CLI port
+        required: false
+        type: string
+        default: "3363"
+      install_optional_help:
+        description: Install optional help (0 or 1)
+        required: false
+        type: choice
+        options:
+          - "0"
+          - "1"
+        default: "0"
+      keep_intermediate:
+        description: Keep intermediate seed/phase images for troubleshooting
+        required: false
+        type: boolean
+        default: false
+      architecture:
+        description: Architecture scope to build
+        required: true
+        type: choice
+        options:
+          - x64
+          - x64-x86
+        default: x64
+      cleanup_volumes:
+        description: Remove per-run Docker persist volumes at the end
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: build-your-own-image-windows-serialized-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-x64:
+    name: Build Windows Custom Image x64
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      IMAGE_TAG_X64: labview-custom-windows:${{ inputs.lv_year }}q1-windows-x64-run${{ github.run_id }}
+      PERSIST_VOLUME_X64: vm-${{ github.run_id }}-x64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Docker Windows mode
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $serverOs = (docker version --format '{{.Server.Os}}').Trim()
+          if ($serverOs -ne 'windows') {
+            throw "Runner Docker server is '$serverOs'. This workflow requires Windows container mode."
+          }
+          Write-Host "Docker server OS: $serverOs"
+
+      - name: Build x64 image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'examples/build-your-own-image/build-windows-lv2020x64-resumable.ps1'
+          if (-not (Test-Path -Path $scriptPath -PathType Leaf)) {
+            throw "Required script not found: $scriptPath"
+          }
+
+          $args = @(
+            '-NoProfile',
+            '-File', $scriptPath,
+            '-LvYear', '${{ inputs.lv_year }}',
+            '-LvFeedLocation', '${{ inputs.lv_feed_location }}',
+            '-PersistVolumeName', $env:PERSIST_VOLUME_X64,
+            '-ImageTag', $env:IMAGE_TAG_X64,
+            '-LvCliPackage', '${{ inputs.lv_cli_package }}',
+            '-LvCliPort', '${{ inputs.lv_cli_port }}',
+            '-InstallOptionalHelp', '${{ inputs.install_optional_help }}'
+          )
+
+          if ('${{ inputs.keep_intermediate }}' -eq 'true') {
+            $args += '-KeepIntermediate'
+          }
+
+          & pwsh @args
+          if ($LASTEXITCODE -ne 0) {
+            throw "x64 build failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Summarize x64 image
+        shell: pwsh
+        run: |
+          "- x64 image tag: `$env:IMAGE_TAG_X64`" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- x64 persist volume: `$env:PERSIST_VOLUME_X64`" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Cleanup x64 persist volume
+        if: ${{ always() && inputs.cleanup_volumes && !inputs.keep_intermediate }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          docker volume rm $env:PERSIST_VOLUME_X64 | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Removed volume $env:PERSIST_VOLUME_X64"
+          } else {
+            Write-Host "Volume $env:PERSIST_VOLUME_X64 not removed (it may not exist)."
+          }
+
+  build-x86:
+    name: Build Windows Custom Image x86
+    needs: build-x64
+    if: ${{ inputs.architecture == 'x64-x86' }}
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      IMAGE_TAG_X86: labview-custom-windows:${{ inputs.lv_year }}q1-windows-x86-run${{ github.run_id }}
+      PERSIST_VOLUME_X86: vm-${{ github.run_id }}-x86
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Docker Windows mode
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $serverOs = (docker version --format '{{.Server.Os}}').Trim()
+          if ($serverOs -ne 'windows') {
+            throw "Runner Docker server is '$serverOs'. This workflow requires Windows container mode."
+          }
+          Write-Host "Docker server OS: $serverOs"
+
+      - name: Build x86 image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace('${{ inputs.x86_core_package }}')) {
+            throw "x86_core_package is required when architecture='x64-x86'."
+          }
+
+          throw "x86 build is deferred during phase-first x64 stabilization. Use architecture='x64' until x86 follow-up is implemented."
+
+      - name: Summarize x86 image
+        shell: pwsh
+        run: |
+          "- x86 image tag: `$env:IMAGE_TAG_X86`" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- x86 persist volume: `$env:PERSIST_VOLUME_X86`" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Cleanup x86 persist volume
+        if: ${{ always() && inputs.cleanup_volumes && !inputs.keep_intermediate }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          docker volume rm $env:PERSIST_VOLUME_X86 | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Removed volume $env:PERSIST_VOLUME_X86"
+          } else {
+            Write-Host "Volume $env:PERSIST_VOLUME_X86 not removed (it may not exist)."
+          }
