@@ -74,8 +74,15 @@ function Invoke-Nipkg {
     Write-Host "Running ${StepName}: $commandText"
     Append-InstallLog -Text "Running ${StepName}: $commandText"
 
-    $output = & $script:NipkgExe @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $script:NipkgExe @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $outputText = if ($null -eq $output) { '' } else { (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine) }
 
     if (-not [string]::IsNullOrWhiteSpace($outputText)) {
@@ -177,10 +184,10 @@ try {
     Append-InstallLog -Text "Starting install flow for LabVIEW $LvYear."
 
     Invoke-Nipkg -Arguments @('feed-remove', $feedName) -StepName 'feed-remove-preflight' -IgnoreFailure | Out-Null
-    Invoke-Nipkg -Arguments @('feed-add', '--name', $feedName, $LvFeedLocation) -StepName 'feed-add' | Out-Null
-    Invoke-Nipkg -Arguments @('feed-update') -StepName 'feed-update' | Out-Null
+    Invoke-Nipkg -Arguments @('feed-add', "--name=$feedName", $LvFeedLocation) -StepName 'feed-add' | Out-Null
+    Invoke-Nipkg -Arguments @('feed-update', $feedName) -StepName 'feed-update' | Out-Null
 
-    $availableResult = Invoke-Nipkg -Arguments @('list', "ni-labview-$LvYear*", 'ni-labview-command-line-interface*') -StepName 'list-available'
+    $availableResult = Invoke-Nipkg -Arguments @('list') -StepName 'list-available' -IgnoreFailure
     $availableLines = $availableResult.Output -split "`r?`n" | Where-Object {
         $_ -match "ni-labview-$LvYear" -or $_ -match 'ni-labview-command-line-interface'
     }

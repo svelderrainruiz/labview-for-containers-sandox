@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ImageTag = 'labview-custom-windows:lv2020x64',
+    [string]$ImageTag = 'labview-custom-windows:2020q1-windows',
     [Parameter(Mandatory = $true)][string]$LvFeedLocation,
     [string]$PersistVolumeName = 'vm',
     [string]$Phase1Tag = '',
@@ -10,7 +10,11 @@ param(
     [string]$LvCorePackage = 'ni-labview-2020-core-en',
     [string]$LvCliPackage = 'ni-labview-command-line-interface-x86',
     [string]$LvCliPort = '3366',
-    [ValidateSet('0', '1')][string]$InstallOptionalHelp = '0'
+    [ValidateSet('0', '1')][string]$InstallOptionalHelp = '0',
+    [string]$DnsServer = '1.1.1.1',
+    [string]$NipmInstallerDownloadUrl = 'https://download.ni.com/support/nipkg/products/ni-package-manager/installers/NIPackageManager26.0.0.exe',
+    [string]$NipmInstallerDownloadSha256 = 'A2AF381482F85ABA2A963676EAC436F96D69572A9EBFBAF85FF26C372A1995C3',
+    [string]$NipmInstallerSourcePath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -72,9 +76,161 @@ function Remove-ImageIfPresent {
     }
 }
 
+function Test-ValidFile {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+
+    return ((Get-Item -LiteralPath $Path).Length -gt 0)
+}
+
+function Test-HasNipmCompanionFiles {
+    param([string]$InstallerPath)
+
+    if (-not (Test-ValidFile -Path $InstallerPath)) {
+        return $false
+    }
+
+    $installerDirectory = Split-Path -Parent $InstallerPath
+    $requiredCompanions = @(
+        'Install.exe.config',
+        'nipkgclient.dll',
+        'NationalInstruments.PackageManagement.Core.dll'
+    )
+
+    foreach ($companionFile in $requiredCompanions) {
+        if (Test-Path -LiteralPath (Join-Path $installerDirectory $companionFile)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Convert-ToDockerContainerPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $Path
+    }
+
+    return ($Path -replace '\\', '/')
+}
+
+function Write-InstallerHash {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$SourceLabel
+    )
+
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+    Write-Host "NIPM bootstrapper source: $SourceLabel"
+    Write-Host "NIPM bootstrapper SHA256: $hash"
+}
+
+function Get-UpperInvariant {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ''
+    }
+
+    return $Value.ToUpperInvariant()
+}
+
+function Ensure-NipmInstallerBootstrapper {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallerPath,
+        [string]$DownloadUrl,
+        [string]$DownloadSha256,
+        [string]$SourcePath
+    )
+
+    $installerDirectory = Split-Path -Parent $InstallerPath
+    if (-not (Test-Path -LiteralPath $installerDirectory)) {
+        New-Item -Path $installerDirectory -ItemType Directory -Force | Out-Null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SourcePath)) {
+        $resolvedSourcePath = (Resolve-Path -Path $SourcePath -ErrorAction Stop).Path
+        $sourceItem = Get-Item -LiteralPath $resolvedSourcePath
+        if ($sourceItem.PSIsContainer) {
+            Copy-Item -Path (Join-Path $resolvedSourcePath '*') -Destination $installerDirectory -Recurse -Force
+        }
+        else {
+            if (-not (Test-ValidFile -Path $resolvedSourcePath)) {
+                throw "NIPM bootstrapper source path exists but is not a valid file: $resolvedSourcePath"
+            }
+
+            Copy-Item -LiteralPath $resolvedSourcePath -Destination $InstallerPath -Force
+        }
+
+        if (-not (Test-ValidFile -Path $InstallerPath)) {
+            throw "Failed to copy NIPM bootstrapper from source path: $resolvedSourcePath"
+        }
+
+        $sourceLabel = if ($sourceItem.PSIsContainer) {
+            "copied from host directory '$resolvedSourcePath'"
+        }
+        else {
+            "copied from host path '$resolvedSourcePath'"
+        }
+        Write-InstallerHash -Path $InstallerPath -SourceLabel $sourceLabel
+        return
+    }
+
+    if (Test-ValidFile -Path $InstallerPath) {
+        $existingHash = Get-UpperInvariant -Value ((Get-FileHash -Algorithm SHA256 -LiteralPath $InstallerPath).Hash)
+        $downloadHashMatch = (-not [string]::IsNullOrWhiteSpace($DownloadSha256)) -and ($existingHash -eq (Get-UpperInvariant -Value $DownloadSha256))
+        if ((Test-HasNipmCompanionFiles -InstallerPath $InstallerPath) -or $downloadHashMatch) {
+            Write-InstallerHash -Path $InstallerPath -SourceLabel 'existing local file'
+            return
+        }
+
+        Write-Host 'Existing local install.exe found without NIPM companion files; refreshing from source.'
+        Remove-Item -LiteralPath $InstallerPath -Force
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($DownloadUrl)) {
+        Write-Host "Attempting NIPM bootstrapper download from '$DownloadUrl'."
+        try {
+            Invoke-WebRequest -Uri $DownloadUrl -OutFile $InstallerPath
+            if (-not (Test-ValidFile -Path $InstallerPath)) {
+                throw 'Downloaded file is missing or empty.'
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($DownloadSha256)) {
+                $downloadedHash = Get-UpperInvariant -Value ((Get-FileHash -Algorithm SHA256 -LiteralPath $InstallerPath).Hash)
+                $expectedHash = Get-UpperInvariant -Value $DownloadSha256
+                if ($downloadedHash -ne $expectedHash) {
+                    throw "Downloaded NIPM installer hash mismatch. Expected $expectedHash, got $downloadedHash."
+                }
+            }
+
+            Write-InstallerHash -Path $InstallerPath -SourceLabel "downloaded from '$DownloadUrl'"
+            return
+        }
+        catch {
+            if (Test-Path -LiteralPath $InstallerPath) {
+                Remove-Item -LiteralPath $InstallerPath -Force -ErrorAction SilentlyContinue
+            }
+            Write-Warning "NIPM download attempt failed: $($_.Exception.Message)"
+        }
+    }
+
+    throw "Unable to locate a valid NIPM bootstrapper. Provide -NipmInstallerSourcePath or a working -NipmInstallerDownloadUrl."
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $dockerfilePath = Join-Path $PSScriptRoot 'Dockerfile-windows'
 $installerScriptPath = Join-Path $PSScriptRoot 'Resources\Windows Resources\Install-LV2020x64.ps1'
+$installerBootstrapperPath = Join-Path $PSScriptRoot 'Resources\Windows Resources\install.exe'
 $seedTag = Get-DerivedImageTag -BaseTag $ImageTag -Suffix 'seed'
 if ([string]::IsNullOrWhiteSpace($Phase1Tag)) {
     $Phase1Tag = Get-DerivedImageTag -BaseTag $ImageTag -Suffix 'phase1'
@@ -93,6 +249,8 @@ $phase2TagCreated = $false
 Write-Host "Repo root: $repoRoot"
 Write-Host "Final image tag: $ImageTag"
 Write-Host "Volume: $PersistVolumeName"
+Write-Host "Container DNS: $DnsServer"
+Write-Host "NIPM download URL: $NipmInstallerDownloadUrl"
 
 if (-not (Test-Path -Path $dockerfilePath)) {
     throw "Required file not found: $dockerfilePath"
@@ -100,6 +258,12 @@ if (-not (Test-Path -Path $dockerfilePath)) {
 if (-not (Test-Path -Path $installerScriptPath)) {
     throw "Required file not found: $installerScriptPath"
 }
+
+Ensure-NipmInstallerBootstrapper `
+    -InstallerPath $installerBootstrapperPath `
+    -DownloadUrl $NipmInstallerDownloadUrl `
+    -DownloadSha256 $NipmInstallerDownloadSha256 `
+    -SourcePath $NipmInstallerSourcePath
 
 $branchName = (& git -C $repoRoot rev-parse --abbrev-ref HEAD).Trim()
 if ($LASTEXITCODE -ne 0) {
@@ -142,7 +306,12 @@ try {
     $phase1Args = @(
         'run',
         '--name', $phase1Container,
-        '--volume', $volumeArg,
+        '--volume', $volumeArg
+    )
+    if (-not [string]::IsNullOrWhiteSpace($DnsServer)) {
+        $phase1Args += @('--dns', $DnsServer)
+    }
+    $phase1Args += @(
         '--env', "LV_FEED_LOCATION=$LvFeedLocation",
         '--env', "LV_YEAR=$LvYear",
         '--env', "LV_CORE_PACKAGE=$LvCorePackage",
@@ -169,7 +338,12 @@ try {
         $phase2Args = @(
             'run',
             '--name', $phase2Container,
-            '--volume', $volumeArg,
+            '--volume', $volumeArg
+        )
+        if (-not [string]::IsNullOrWhiteSpace($DnsServer)) {
+            $phase2Args += @('--dns', $DnsServer)
+        }
+        $phase2Args += @(
             '--env', "LV_FEED_LOCATION=$LvFeedLocation",
             '--env', "LV_YEAR=$LvYear",
             '--env', "LV_CORE_PACKAGE=$LvCorePackage",
@@ -190,7 +364,6 @@ try {
             throw "Phase 2 still requires reboot. Inspect '$PersistVolumeName\\state.json' and container logs."
         }
 
-        Invoke-DockerCommand -Arguments @('exec', $phase2Container, 'cmd', '/S', '/C', 'if exist C:\ni\resources rmdir /S /Q C:\ni\resources') -Description 'cleanup resources in phase2 container' | Out-Null
         Invoke-DockerCommand -Arguments @('commit', $phase2Container, $Phase2Tag) -Description 'commit phase2 image' | Out-Null
         $phase2TagCreated = $true
         Invoke-DockerCommand -Arguments @('tag', $Phase2Tag, $ImageTag) -Description 'tag final image from phase2 image' | Out-Null
@@ -200,7 +373,6 @@ try {
     elseif ($phase1ExitCode -eq 0) {
         Invoke-DockerCommand -Arguments @('commit', $phase1Container, $Phase1Tag) -Description 'commit phase1 image' | Out-Null
         $phase1TagCreated = $true
-        Invoke-DockerCommand -Arguments @('exec', $phase1Container, 'cmd', '/S', '/C', 'if exist C:\ni\resources rmdir /S /Q C:\ni\resources') -Description 'cleanup resources in phase1 container' | Out-Null
         Invoke-DockerCommand -Arguments @('commit', $phase1Container, $ImageTag) -Description 'commit final image from phase1 container' | Out-Null
         Remove-ContainerIfPresent -ContainerName $phase1Container
         $phase1Created = $false
