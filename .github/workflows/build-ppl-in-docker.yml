@@ -1,0 +1,248 @@
+name: Build Icon Editor PPL In Docker (x64, From Scratch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      lv_year:
+        description: LabVIEW year passed to the image build script
+        required: true
+        type: string
+        default: "2020"
+      lv_feed_location:
+        description: NI package feed URL (LvFeedLocation)
+        required: true
+        type: string
+      lv_cli_package:
+        description: LabVIEW CLI package ID
+        required: false
+        type: string
+        default: ni-labview-command-line-interface-x86
+      lv_cli_port:
+        description: LabVIEW CLI port
+        required: false
+        type: string
+        default: "3363"
+      install_optional_help:
+        description: Install optional help (0 or 1)
+        required: false
+        type: choice
+        options:
+          - "0"
+          - "1"
+        default: "0"
+      keep_intermediate:
+        description: Keep intermediate seed/phase images for troubleshooting
+        required: false
+        type: boolean
+        default: false
+      cleanup_volumes:
+        description: Remove per-run Docker persist volumes at the end
+        required: false
+        type: boolean
+        default: true
+      icon_editor_repository:
+        description: GitHub repository containing lv_icon_editor.lvproj sources
+        required: false
+        type: string
+        default: svelderrainruiz/labview-icon-editor
+      icon_editor_ref:
+        description: Git ref for icon-editor source checkout
+        required: false
+        type: string
+        default: develop
+
+concurrency:
+  group: build-ppl-in-docker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-ppl-x64:
+    name: Build lv_icon.lvlibp In Docker (x64)
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      IMAGE_TAG_X64: labview-custom-windows:${{ inputs.lv_year }}q1-windows-x64-ppl-run${{ github.run_id }}
+      PERSIST_VOLUME_X64: vm-${{ github.run_id }}-ppl-x64
+    steps:
+      - name: Checkout labview-for-containers
+        uses: actions/checkout@v4
+
+      - name: Verify Docker Windows mode
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $serverOs = (docker version --format '{{.Server.Os}}').Trim()
+          if ($serverOs -ne 'windows') {
+            throw "Runner Docker server is '$serverOs'. This workflow requires Windows container mode."
+          }
+          Write-Host "Docker server OS: $serverOs"
+
+      - name: Build x64 image from scratch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'examples/build-your-own-image/build-windows-lv2020x64-resumable.ps1'
+          if (-not (Test-Path -Path $scriptPath -PathType Leaf)) {
+            throw "Required script not found: $scriptPath"
+          }
+
+          $args = @(
+            '-NoProfile',
+            '-File', $scriptPath,
+            '-LvYear', '${{ inputs.lv_year }}',
+            '-LvFeedLocation', '${{ inputs.lv_feed_location }}',
+            '-PersistVolumeName', $env:PERSIST_VOLUME_X64,
+            '-ImageTag', $env:IMAGE_TAG_X64,
+            '-LvCliPackage', '${{ inputs.lv_cli_package }}',
+            '-LvCliPort', '${{ inputs.lv_cli_port }}',
+            '-InstallOptionalHelp', '${{ inputs.install_optional_help }}'
+          )
+
+          if ('${{ inputs.keep_intermediate }}' -eq 'true') {
+            $args += '-KeepIntermediate'
+          }
+
+          & pwsh @args
+          if ($LASTEXITCODE -ne 0) {
+            throw "x64 image build failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Checkout icon-editor source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.icon_editor_repository }}
+          ref: ${{ inputs.icon_editor_ref }}
+          path: icon-editor
+          fetch-depth: 1
+
+      - name: Build lv_icon.lvlibp inside Docker image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iconEditorPath = Join-Path $env:GITHUB_WORKSPACE 'icon-editor'
+          if (-not (Test-Path -LiteralPath $iconEditorPath -PathType Container)) {
+            throw "Icon editor workspace not found: $iconEditorPath"
+          }
+
+          $resolvedIconEditorPath = (Resolve-Path -Path $iconEditorPath -ErrorAction Stop).Path
+          $volumeArg = '{0}:C:\workspace' -f $resolvedIconEditorPath
+          $lvCliPort = '${{ inputs.lv_cli_port }}'
+          if ([string]::IsNullOrWhiteSpace($lvCliPort)) {
+            $lvCliPort = '3363'
+          }
+
+          $containerScript = @'
+          $ErrorActionPreference = "Stop"
+
+          $repoRoot = "C:\workspace"
+          $buildScript = Join-Path $repoRoot ".github\actions\build-lvlibp\BuildProjectSpec.ps1"
+          if (-not (Test-Path -LiteralPath $buildScript -PathType Leaf)) {
+            throw "BuildProjectSpec script not found: $buildScript"
+          }
+
+          $lvYear = [Environment]::GetEnvironmentVariable("PPL_LV_YEAR")
+          if ([string]::IsNullOrWhiteSpace($lvYear)) {
+            throw "PPL_LV_YEAR is required."
+          }
+
+          $buildNumberRaw = [Environment]::GetEnvironmentVariable("PPL_BUILD_NUMBER")
+          $parsedBuildNumber = 0
+          if (-not [int]::TryParse($buildNumberRaw, [ref]$parsedBuildNumber)) {
+            throw "PPL_BUILD_NUMBER must be a valid integer. Current value: '$buildNumberRaw'"
+          }
+          $buildNumber = [int]$parsedBuildNumber
+
+          $commit = [Environment]::GetEnvironmentVariable("PPL_COMMIT")
+          if ([string]::IsNullOrWhiteSpace($commit)) {
+            throw "PPL_COMMIT is required."
+          }
+
+          & $buildScript `
+            -LabVIEWVersion $lvYear `
+            -SupportedBitness "64" `
+            -RepoRoot $repoRoot `
+            -ProjectSpecType "PackedLibrary" `
+            -BuildSpecName "Editor Packed Library" `
+            -OutputRelativePath "resource/plugins/lv_icon.lvlibp" `
+            -TargetName "My Computer" `
+            -Major 0 `
+            -Minor 0 `
+            -Patch 0 `
+            -Build $buildNumber `
+            -Commit $commit `
+            -SkipWorktreeRootCheck
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "BuildProjectSpec.ps1 failed with exit code $LASTEXITCODE."
+          }
+
+          $outputPath = Join-Path $repoRoot "resource\plugins\lv_icon.lvlibp"
+          if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+            throw "Expected packed library output not found: $outputPath"
+          }
+          $outputItem = Get-Item -LiteralPath $outputPath
+          Write-Host ("PPL output: {0} ({1} bytes)" -f $outputItem.FullName, $outputItem.Length)
+          '@
+
+          docker run --rm `
+            --volume $volumeArg `
+            --env "LV_CLI_PORT=$lvCliPort" `
+            --env "PPL_LV_YEAR=${{ inputs.lv_year }}" `
+            --env "PPL_BUILD_NUMBER=${{ github.run_number }}" `
+            --env "PPL_COMMIT=${{ github.sha }}" `
+            $env:IMAGE_TAG_X64 `
+            powershell -NoProfile -ExecutionPolicy Bypass -Command $containerScript
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker PPL build failed with exit code $LASTEXITCODE."
+          }
+
+          $hostOutputPath = Join-Path $resolvedIconEditorPath 'resource\plugins\lv_icon.lvlibp'
+          if (-not (Test-Path -LiteralPath $hostOutputPath -PathType Leaf)) {
+            throw "Packed library output missing at host path: $hostOutputPath"
+          }
+
+      - name: Upload packed library artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lv_icon.lvlibp-docker-x64
+          path: ${{ github.workspace }}/icon-editor/resource/plugins/lv_icon.lvlibp
+          if-no-files-found: error
+
+      - name: Upload build logs artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lv_icon.lvlibp-docker-x64-logs
+          path: |
+            ${{ github.workspace }}/icon-editor/builds/logs
+            ${{ github.workspace }}/icon-editor/builds/status
+          if-no-files-found: warn
+
+      - name: Summarize run
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          "- image tag: `$env:IMAGE_TAG_X64`" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- persist volume: `$env:PERSIST_VOLUME_X64`" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- icon-editor source: `${{ inputs.icon_editor_repository }}@${{ inputs.icon_editor_ref }}`" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- artifact: `lv_icon.lvlibp-docker-x64`" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "- logs artifact: `lv_icon.lvlibp-docker-x64-logs`" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Cleanup x64 persist volume
+        if: ${{ always() && inputs.cleanup_volumes && !inputs.keep_intermediate }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          docker volume inspect $env:PERSIST_VOLUME_X64 *> $null
+          if ($LASTEXITCODE -eq 0) {
+            docker volume rm $env:PERSIST_VOLUME_X64 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Removed volume $env:PERSIST_VOLUME_X64"
+            } else {
+              Write-Host "Volume $env:PERSIST_VOLUME_X64 could not be removed."
+            }
+          } else {
+            Write-Host "Volume $env:PERSIST_VOLUME_X64 not found; skipping cleanup."
+          }
+          $global:LASTEXITCODE = 0
