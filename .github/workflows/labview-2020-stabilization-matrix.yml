@@ -1,0 +1,261 @@
+name: LabVIEW 2020 Stabilization Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to verify'
+        required: true
+        default: 'labview-custom-windows:2020q1-windows'
+        type: string
+      lv_year:
+        description: 'LabVIEW year'
+        required: true
+        default: '2020'
+        type: string
+      lv_cli_port:
+        description: 'LabVIEW CLI port (x64 contract is 3363)'
+        required: true
+        default: '3363'
+        type: string
+      runner_target:
+        description: 'Runner lane'
+        required: true
+        default: 'hosted-2022'
+        type: choice
+        options:
+          - hosted-2022
+          - self-hosted-2019
+      base_matrix:
+        description: 'Expected OS base lane'
+        required: true
+        default: 'server2022'
+        type: choice
+        options:
+          - server2022
+          - server2019
+      isolation_mode:
+        description: 'Docker isolation mode'
+        required: true
+        default: 'process'
+        type: choice
+        options:
+          - process
+          - hyperv
+      max_cli_attempts:
+        description: 'Max MassCompile attempts in a single container lifecycle'
+        required: true
+        default: '2'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  stabilize-hosted-2022:
+    if: ${{ inputs.runner_target == 'hosted-2022' }}
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate hosted lane contract
+        shell: pwsh
+        run: |
+          if ('${{ inputs.base_matrix }}' -ne 'server2022') {
+            throw "hosted-2022 lane requires base_matrix=server2022. Received: ${{ inputs.base_matrix }}"
+          }
+
+      - name: Run verifier
+        id: verify
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $logRoot = "TestResults/agent-logs/stabilization-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+          New-Item -Path $logRoot -ItemType Directory -Force | Out-Null
+
+          & .\examples\build-your-own-image\verify-lv-cli-masscompile-from-image.ps1 `
+            -ImageTag '${{ inputs.image_tag }}' `
+            -LvYear '${{ inputs.lv_year }}' `
+            -LvCliPort '${{ inputs.lv_cli_port }}' `
+            -IsolationMode '${{ inputs.isolation_mode }}' `
+            -MaxCliAttempts ([int]'${{ inputs.max_cli_attempts }}') `
+            -LogRoot $logRoot
+
+      - name: Classify stabilization outcome
+        id: classify
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactRoot = "TestResults/agent-logs/stabilization-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+          New-Item -Path $artifactRoot -ItemType Directory -Force | Out-Null
+
+          $summaryPath = $null
+          $classification = 'environment_incompatible'
+
+          $runDir = Get-ChildItem -LiteralPath $artifactRoot -Directory -Filter 'p3363-single-run-*' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+
+          if ($null -ne $runDir) {
+            $candidateSummary = Join-Path $runDir.FullName 'summary.json'
+            if (Test-Path -LiteralPath $candidateSummary -PathType Leaf) {
+              $summaryPath = $candidateSummary
+              $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json -ErrorAction Stop
+
+              if ($summary.run_succeeded -and $summary.final_exit_code -eq 0 -and -not $summary.contains_minus_350000 -and $summary.port_listening_before_cli) {
+                $classification = 'pass'
+              }
+              elseif (-not $summary.port_listening_before_cli) {
+                $classification = 'port_not_listening'
+              }
+              elseif ($summary.contains_minus_350000 -or $summary.final_exit_code -ne 0) {
+                $classification = 'cli_connect_fail'
+              }
+            }
+          }
+
+          "classification=$classification" >> $env:GITHUB_OUTPUT
+          if ($null -ne $summaryPath) {
+            "summary_path=$summaryPath" >> $env:GITHUB_OUTPUT
+          }
+
+          @(
+            "### LabVIEW 2020 Stabilization Result",
+            "- Runner lane: hosted-2022",
+            "- Image: `${{ inputs.image_tag }}`",
+            "- Isolation: `${{ inputs.isolation_mode }}`",
+            "- Classification: `$classification`",
+            "- Summary path: " + ($(if ($null -ne $summaryPath) { $summaryPath } else { '<not-found>' }))
+          ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Upload stabilization logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stabilization-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: TestResults/agent-logs/stabilization-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          if-no-files-found: warn
+
+      - name: Enforce non-pass as failure
+        if: always()
+        shell: pwsh
+        run: |
+          if ('${{ steps.classify.outputs.classification }}' -ne 'pass') {
+            throw "Stabilization classification is ${{ steps.classify.outputs.classification }}"
+          }
+
+  stabilize-self-hosted-2019:
+    if: ${{ inputs.runner_target == 'self-hosted-2019' }}
+    runs-on:
+      - self-hosted
+      - windows
+      - server2019
+    timeout-minutes: 180
+    env:
+      LVIE_ENFORCE_DEDICATED_HOST_CONTRACT: '1'
+      LVIE_REQUIRED_LABVIEW_YEARS: '2020,2026'
+      LVIE_REQUIRED_CLI_MAJOR: '26'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Runner sanity (dedicated host contract)
+        uses: ./.github/actions/runner-bootstrap
+        with:
+          runner_sanity: 'true'
+          enforce_host_contract: 'true'
+          host_contract_path: Tooling/runner-host-contract.json
+          required_labview_years: ${{ env.LVIE_REQUIRED_LABVIEW_YEARS }}
+          required_cli_major: ${{ env.LVIE_REQUIRED_CLI_MAJOR }}
+
+      - name: Validate self-hosted lane contract
+        shell: pwsh
+        run: |
+          if ('${{ inputs.base_matrix }}' -ne 'server2019') {
+            throw "self-hosted-2019 lane requires base_matrix=server2019. Received: ${{ inputs.base_matrix }}"
+          }
+
+      - name: Run verifier
+        id: verify
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $logRoot = "TestResults/agent-logs/stabilization-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+          New-Item -Path $logRoot -ItemType Directory -Force | Out-Null
+
+          & .\examples\build-your-own-image\verify-lv-cli-masscompile-from-image.ps1 `
+            -ImageTag '${{ inputs.image_tag }}' `
+            -LvYear '${{ inputs.lv_year }}' `
+            -LvCliPort '${{ inputs.lv_cli_port }}' `
+            -IsolationMode '${{ inputs.isolation_mode }}' `
+            -MaxCliAttempts ([int]'${{ inputs.max_cli_attempts }}') `
+            -LogRoot $logRoot
+
+      - name: Classify stabilization outcome
+        id: classify
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactRoot = "TestResults/agent-logs/stabilization-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+          New-Item -Path $artifactRoot -ItemType Directory -Force | Out-Null
+
+          $summaryPath = $null
+          $classification = 'environment_incompatible'
+
+          $runDir = Get-ChildItem -LiteralPath $artifactRoot -Directory -Filter 'p3363-single-run-*' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+
+          if ($null -ne $runDir) {
+            $candidateSummary = Join-Path $runDir.FullName 'summary.json'
+            if (Test-Path -LiteralPath $candidateSummary -PathType Leaf) {
+              $summaryPath = $candidateSummary
+              $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json -ErrorAction Stop
+
+              if ($summary.run_succeeded -and $summary.final_exit_code -eq 0 -and -not $summary.contains_minus_350000 -and $summary.port_listening_before_cli) {
+                $classification = 'pass'
+              }
+              elseif (-not $summary.port_listening_before_cli) {
+                $classification = 'port_not_listening'
+              }
+              elseif ($summary.contains_minus_350000 -or $summary.final_exit_code -ne 0) {
+                $classification = 'cli_connect_fail'
+              }
+            }
+          }
+
+          "classification=$classification" >> $env:GITHUB_OUTPUT
+          if ($null -ne $summaryPath) {
+            "summary_path=$summaryPath" >> $env:GITHUB_OUTPUT
+          }
+
+          @(
+            "### LabVIEW 2020 Stabilization Result",
+            "- Runner lane: self-hosted-2019",
+            "- Image: `${{ inputs.image_tag }}`",
+            "- Isolation: `${{ inputs.isolation_mode }}`",
+            "- Classification: `$classification`",
+            "- Summary path: " + ($(if ($null -ne $summaryPath) { $summaryPath } else { '<not-found>' }))
+          ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Upload stabilization logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stabilization-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: TestResults/agent-logs/stabilization-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          if-no-files-found: warn
+
+      - name: Enforce non-pass as failure
+        if: always()
+        shell: pwsh
+        run: |
+          if ('${{ steps.classify.outputs.classification }}' -ne 'pass') {
+            throw "Stabilization classification is ${{ steps.classify.outputs.classification }}"
+          }

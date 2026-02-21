@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "required_labview_years": [
+    "2020",
+    "2026"
+  ],
+  "required_bitness": [
+    "64",
+    "32"
+  ],
+  "cli_policy": "global-2026",
+  "required_cli_major": 26,
+  "port_contract_path": "Tooling/labviewcli-port-contract.json"
+}
