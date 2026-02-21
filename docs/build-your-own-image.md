@@ -4,6 +4,7 @@ This document is an entry point for building **custom LabVIEW container images**
 
 - [Building Your Own LabVIEW Linux Container Image](./linux-custom-images.md)
 - [Building Your Own LabVIEW Windows Container Image](./windows-custom-images.md)
+- [Windows Custom Images Operations (Fork)](./windows-custom-images-operations.md)
 
 Use these guides if you need more control than the prebuilt images provide—for example, to:
 - Install additional software or dependencies
@@ -29,3 +30,4 @@ For general information about supported base images and headless operation, see:
 
 - If you are targeting **Linux containers**, continue with: [Building Your Own LabVIEW Linux Container Image](./linux-custom-images.md)
 - If you are targeting **Windows containers**, continue with: [Building Your Own LabVIEW Windows Container Image](./windows-custom-images.md)
+- If you need this fork's stabilization/promotion runbooks, continue with: [Windows Custom Images Operations (Fork)](./windows-custom-images-operations.md)

@@ -102,8 +102,29 @@ For every non-trivial run, persist:
 - Document classification outcomes in issue comments with artifact paths.
 - If an issue is already closed, open a new issue for new scope rather than overloading the closed one.
 
+## Docs Harmonization Contract
+- Keep `docs/windows-custom-images.md` canonical-first and aligned to NI structure.
+- Place fork-specific procedures/policy in `docs/windows-custom-images-operations.md`.
+- Keep `docs/build-your-own-image.md` as entry/navigation and include links to both canonical and fork operations guides.
+- Do not re-introduce fork-only troubleshooting/promotion policy into `docs/windows-custom-images.md`.
+- Do not remove cross-links between canonical and fork operations docs.
+
+## Docs Validation Checklist
+- Heading parity: `docs/windows-custom-images.md` must include NI canonical sections in order:
+  - `Prerequisites`
+  - `Important Considerations`
+  - `Dockerfile Overview`
+  - `How to Build the Image`
+  - `Final Notes`
+  - `What's next`
+- Link integrity: internal links in modified docs resolve and target existing docs.
+- Command sanity: Windows PowerShell command blocks in modified docs remain runnable as written.
+- Scope check: fork-only stabilization details are present in `docs/windows-custom-images-operations.md`, not mixed into canonical sections.
+
 ## Source-of-Truth Files
+- `docs/build-your-own-image.md`
 - `docs/windows-custom-images.md`
+- `docs/windows-custom-images-operations.md`
 - `docs/faqs.md`
 - `.github/workflows/labview-image-contract-certification.yml`
 - `examples/build-your-own-image/certify-image-contract.ps1`
