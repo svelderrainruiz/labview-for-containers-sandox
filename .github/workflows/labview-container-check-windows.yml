@@ -1,4 +1,4 @@
-name: Run LabVIEWCLI on Windows Container
+name: Regression Gates on Windows Container
 
 on:
   pull_request:
@@ -11,24 +11,26 @@ jobs:
   run-labview-cli-windows:
     # This job requires a runner with Docker configured for Windows containers.
     runs-on: windows-latest
+    env:
+      LABVIEW_IMAGE_WINDOWS: nationalinstruments/labview:2026q1-windows
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Pull LabVIEW container image
-        run: docker pull nationalinstruments/labview:latest-windows
+      - name: Pull LabVIEW container image (pinned)
+        run: docker pull ${{ env.LABVIEW_IMAGE_WINDOWS }}
 
-      - name: Run LabVIEWCLI MassCompile on Arrays
+      - name: "Gate 1 (Examples): MassCompile Arrays"
         run: >
           docker run --rm
-          nationalinstruments/labview:latest-windows
+          ${{ env.LABVIEW_IMAGE_WINDOWS }}
           LabVIEWCLI -OperationName MassCompile -DirectoryToCompile
           "C:\Program Files\National Instruments\LabVIEW 2026\examples\Arrays" -Headless
 
-      - name: Run CI integration script in container
+      - name: "Gate 2 (Examples): Run integration script"
         run: >
           docker run --rm
           -v "${{ github.workspace }}:C:\workspace"
-          nationalinstruments/labview:latest-windows
-          powershell -File "C:\workspace\examples\integration-into-cicd\runlabview.ps1" -WorkspaceRoot "C:\workspace"
+          ${{ env.LABVIEW_IMAGE_WINDOWS }}
+          powershell -File "C:\workspace\examples\integration-into-cicd\runlabview.ps1" -WorkspaceRoot "C:\workspace" -LabVIEWYear 2026
