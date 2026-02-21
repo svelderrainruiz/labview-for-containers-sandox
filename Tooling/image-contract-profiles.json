@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "profiles": {
+    "2020-x64-stabilization": {
+      "lv_year": "2020",
+      "lv_cli_port": "3363",
+      "directory_to_compile": "C:\\Program Files\\National Instruments\\LabVIEW 2020\\examples\\Arrays",
+      "requires_real_server2019": true,
+      "required_repeat_runs": 2
+    },
+    "2026-x64-throughput": {
+      "lv_year": "2026",
+      "lv_cli_port": "3363",
+      "directory_to_compile": "C:\\Program Files\\National Instruments\\LabVIEW 2026\\examples\\Arrays",
+      "requires_real_server2019": false,
+      "required_repeat_runs": 2
+    }
+  }
+}

@@ -1,0 +1,227 @@
+name: LabVIEW Image Contract Certification
+
+on:
+  workflow_dispatch:
+    inputs:
+      contract_profile:
+        description: 'Contract profile from Tooling/image-contract-profiles.json'
+        required: true
+        default: '2026-x64-throughput'
+        type: choice
+        options:
+          - 2026-x64-throughput
+          - 2020-x64-stabilization
+      image_tag:
+        description: 'Image tag to certify'
+        required: true
+        default: 'nationalinstruments/labview:2026q1-windows'
+        type: string
+      runner_target:
+        description: 'Certification runner lane'
+        required: true
+        default: 'hosted-2022'
+        type: choice
+        options:
+          - hosted-2022
+          - self-hosted-server2019
+      isolation_mode:
+        description: 'Docker isolation mode'
+        required: true
+        default: 'process'
+        type: choice
+        options:
+          - process
+          - hyperv
+      max_cli_attempts:
+        description: 'Max CLI attempts per verifier run'
+        required: true
+        default: '2'
+        type: string
+      repeat_runs:
+        description: 'Override repeat runs (0 uses profile default)'
+        required: true
+        default: '2'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  certify-hosted:
+    if: ${{ inputs.runner_target == 'hosted-2022' }}
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run image contract certification
+        id: certify
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $logRoot = "TestResults/agent-logs/certification-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+          New-Item -Path $logRoot -ItemType Directory -Force | Out-Null
+
+          & .\examples\build-your-own-image\certify-image-contract.ps1 `
+            -ContractProfile '${{ inputs.contract_profile }}' `
+            -ImageTag '${{ inputs.image_tag }}' `
+            -RunnerTarget '${{ inputs.runner_target }}' `
+            -IsolationMode '${{ inputs.isolation_mode }}' `
+            -MaxCliAttempts ([int]'${{ inputs.max_cli_attempts }}') `
+            -RepeatRuns ([int]'${{ inputs.repeat_runs }}') `
+            -LogRoot $logRoot
+
+      - name: Classify certification result
+        id: classify
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $classification = '${{ steps.certify.outputs.cert_classification }}'
+          $summaryPath = '${{ steps.certify.outputs.cert_summary_path }}'
+
+          if ([string]::IsNullOrWhiteSpace($classification)) {
+            $classification = 'verifier_execution_error'
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($summaryPath) -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
+            $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json -ErrorAction Stop
+            if (-not [string]::IsNullOrWhiteSpace([string]$summary.classification)) {
+              $classification = [string]$summary.classification
+            }
+          }
+
+          "classification=$classification" >> $env:GITHUB_OUTPUT
+          "summary_path=$summaryPath" >> $env:GITHUB_OUTPUT
+
+          @(
+            "### Image Contract Certification",
+            "- Contract profile: ${{ inputs.contract_profile }}",
+            "- Image tag: ${{ inputs.image_tag }}",
+            "- Runner lane: hosted-2022",
+            "- Classification: $classification",
+            "- Summary path: " + ($(if ([string]::IsNullOrWhiteSpace($summaryPath)) { '<not-found>' } else { $summaryPath }))
+          ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Upload certification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-contract-certification-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            TestResults/agent-logs/certification-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+            builds/status/image-contract-cert-summary-*.json
+          if-no-files-found: warn
+
+      - name: Enforce pass classification
+        if: always()
+        shell: pwsh
+        run: |
+          if ('${{ steps.classify.outputs.classification }}' -ne 'pass') {
+            throw "Certification classification is ${{ steps.classify.outputs.classification }}"
+          }
+
+  certify-self-hosted-server2019:
+    if: ${{ inputs.runner_target == 'self-hosted-server2019' }}
+    runs-on:
+      - self-hosted
+      - windows
+      - server2019
+    timeout-minutes: 240
+    env:
+      LVIE_ENFORCE_DEDICATED_HOST_CONTRACT: '1'
+      LVIE_REQUIRED_LABVIEW_YEARS: '2020,2026'
+      LVIE_REQUIRED_CLI_MAJOR: '26'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Runner sanity (dedicated host contract)
+        uses: ./.github/actions/runner-bootstrap
+        with:
+          runner_sanity: 'true'
+          enforce_host_contract: 'true'
+          host_contract_path: Tooling/runner-host-contract.json
+          required_labview_years: ${{ env.LVIE_REQUIRED_LABVIEW_YEARS }}
+          required_cli_major: ${{ env.LVIE_REQUIRED_CLI_MAJOR }}
+
+      - name: Validate real Server 2019 base
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $os = Get-CimInstance -ClassName Win32_OperatingSystem
+          $caption = [string]$os.Caption
+          $build = [string]$os.BuildNumber
+          if ($caption -notmatch 'Server' -or $build -ne '17763') {
+            throw "Runner must be a real Server 2019 lane for 2020 eligibility. Caption='$caption' Build='$build'"
+          }
+
+      - name: Run image contract certification
+        id: certify
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $logRoot = "TestResults/agent-logs/certification-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+          New-Item -Path $logRoot -ItemType Directory -Force | Out-Null
+
+          & .\examples\build-your-own-image\certify-image-contract.ps1 `
+            -ContractProfile '${{ inputs.contract_profile }}' `
+            -ImageTag '${{ inputs.image_tag }}' `
+            -RunnerTarget '${{ inputs.runner_target }}' `
+            -IsolationMode '${{ inputs.isolation_mode }}' `
+            -MaxCliAttempts ([int]'${{ inputs.max_cli_attempts }}') `
+            -RepeatRuns ([int]'${{ inputs.repeat_runs }}') `
+            -LogRoot $logRoot
+
+      - name: Classify certification result
+        id: classify
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $classification = '${{ steps.certify.outputs.cert_classification }}'
+          $summaryPath = '${{ steps.certify.outputs.cert_summary_path }}'
+
+          if ([string]::IsNullOrWhiteSpace($classification)) {
+            $classification = 'verifier_execution_error'
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($summaryPath) -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
+            $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json -ErrorAction Stop
+            if (-not [string]::IsNullOrWhiteSpace([string]$summary.classification)) {
+              $classification = [string]$summary.classification
+            }
+          }
+
+          "classification=$classification" >> $env:GITHUB_OUTPUT
+          "summary_path=$summaryPath" >> $env:GITHUB_OUTPUT
+
+          @(
+            "### Image Contract Certification",
+            "- Contract profile: ${{ inputs.contract_profile }}",
+            "- Image tag: ${{ inputs.image_tag }}",
+            "- Runner lane: self-hosted-server2019",
+            "- Classification: $classification",
+            "- Summary path: " + ($(if ([string]::IsNullOrWhiteSpace($summaryPath)) { '<not-found>' } else { $summaryPath }))
+          ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Upload certification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-contract-certification-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            TestResults/agent-logs/certification-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+            builds/status/image-contract-cert-summary-*.json
+          if-no-files-found: warn
+
+      - name: Enforce pass classification
+        if: always()
+        shell: pwsh
+        run: |
+          if ('${{ steps.classify.outputs.classification }}' -ne 'pass') {
+            throw "Certification classification is ${{ steps.classify.outputs.classification }}"
+          }
