@@ -66,6 +66,8 @@
         "failure_count",
         "all_runs_port_listening",
         "any_minus_350000",
+        "has_preflight_or_execution_error",
+        "has_missing_image_error",
         "run_results"
       ],
       "properties": {
@@ -85,6 +87,12 @@
           "type": "boolean"
         },
         "any_minus_350000": {
+          "type": "boolean"
+        },
+        "has_preflight_or_execution_error": {
+          "type": "boolean"
+        },
+        "has_missing_image_error": {
           "type": "boolean"
         },
         "run_results": {
