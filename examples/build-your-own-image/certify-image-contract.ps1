@@ -188,12 +188,27 @@ for ($index = 1; $index -le $effectiveRepeatRuns; $index++) {
 
 $anyMinus350000 = $false
 $allPortListening = $true
+$hasPreflightOrExecutionError = $false
+$hasMissingImageError = $false
+$firstRunError = ''
 foreach ($result in $runResults) {
     if ($result.contains_minus_350000 -eq $true) {
         $anyMinus350000 = $true
     }
     if ($result.port_listening_before_cli -ne $true) {
         $allPortListening = $false
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$result.error)) {
+        $hasPreflightOrExecutionError = $true
+        if ([string]::IsNullOrWhiteSpace($firstRunError)) {
+            $firstRunError = [string]$result.error
+        }
+        if ([string]$result.error -match '(?i)image not found locally|no such image|manifest unknown|pull access denied') {
+            $hasMissingImageError = $true
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$result.summary_path)) {
+        $hasPreflightOrExecutionError = $true
     }
 }
 
@@ -204,11 +219,14 @@ if ($requiresRealServer2019 -and -not $fingerprint.is_real_server2019) {
 elseif ($failureCount -eq 0 -and $passCount -eq $effectiveRepeatRuns) {
     $classification = 'pass'
 }
+elseif ($hasMissingImageError -or $hasPreflightOrExecutionError) {
+    $classification = 'verifier_execution_error'
+}
+elseif ($anyMinus350000 -or @($runResults | Where-Object { $_.final_exit_code -ne $null -and $_.final_exit_code -ne 0 }).Count -gt 0) {
+    $classification = 'cli_connect_fail'
+}
 elseif (-not $allPortListening) {
     $classification = 'port_not_listening'
-}
-elseif ($anyMinus350000 -or ($runResults | Where-Object { $_.final_exit_code -ne $null -and $_.final_exit_code -ne 0 }).Count -gt 0) {
-    $classification = 'cli_connect_fail'
 }
 
 if ($classification -eq 'pass') {
@@ -221,7 +239,15 @@ elseif ($classification -eq 'cli_connect_fail') {
     $reasons.Add('At least one run had -350000 or a non-zero final_exit_code.') | Out-Null
 }
 elseif ($classification -eq 'verifier_execution_error') {
-    $reasons.Add('Verifier execution failed before producing a passing summary set.') | Out-Null
+    if ($hasMissingImageError) {
+        $reasons.Add("Image acquisition/preflight failed (missing image). First error: $firstRunError") | Out-Null
+    }
+    else {
+        $reasons.Add('Verifier execution failed before producing a passing summary set.') | Out-Null
+        if (-not [string]::IsNullOrWhiteSpace($firstRunError)) {
+            $reasons.Add("First run error: $firstRunError") | Out-Null
+        }
+    }
 }
 
 $promotionEligible = ($classification -eq 'pass') -and ($passCount -eq $effectiveRepeatRuns)
@@ -247,6 +273,8 @@ $summary = [ordered]@{
         failure_count = $failureCount
         all_runs_port_listening = $allPortListening
         any_minus_350000 = $anyMinus350000
+        has_preflight_or_execution_error = $hasPreflightOrExecutionError
+        has_missing_image_error = $hasMissingImageError
         run_results = $runResults
     }
     classification = $classification

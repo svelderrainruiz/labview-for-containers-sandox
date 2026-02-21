@@ -55,6 +55,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Ensure hosted image availability (preflight)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $imageTag = '${{ inputs.image_tag }}'.Trim()
+          if ([string]::IsNullOrWhiteSpace($imageTag)) {
+            throw 'workflow input image_tag is empty.'
+          }
+
+          $dockerServerOs = (& docker version --format '{{.Server.Os}}' 2>$null).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to query Docker server mode on hosted runner.'
+          }
+          if ($dockerServerOs -ne 'windows') {
+            throw "Hosted runner Docker mode must be windows. Current: $dockerServerOs"
+          }
+
+          & docker image inspect $imageTag > $null 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Image already available locally: $imageTag"
+            exit 0
+          }
+
+          Write-Host "Image not present locally, pulling: $imageTag"
+          & docker pull $imageTag
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to pull required image: $imageTag"
+          }
+
+          & docker image inspect $imageTag > $null 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pulled image could not be inspected: $imageTag"
+          }
+
       - name: Run image contract certification
         id: certify
         continue-on-error: true
@@ -105,6 +139,21 @@ jobs:
             "- Summary path: " + ($(if ([string]::IsNullOrWhiteSpace($summaryPath)) { '<not-found>' } else { $summaryPath }))
           ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
+      - name: Assert certification evidence contract
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $minimumRepeatRuns = [int]'${{ inputs.repeat_runs }}'
+          if ($minimumRepeatRuns -le 0) {
+            $minimumRepeatRuns = 1
+          }
+          & .\Tooling\Assert-ImageCertificationEvidence.ps1 `
+            -SummaryPath '${{ steps.classify.outputs.summary_path }}' `
+            -ExpectedContractProfile '${{ inputs.contract_profile }}' `
+            -ExpectedImageTag '${{ inputs.image_tag }}' `
+            -MinRepeatRuns $minimumRepeatRuns
+
       - name: Upload certification artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -137,6 +186,40 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Ensure self-hosted image availability (preflight)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $imageTag = '${{ inputs.image_tag }}'.Trim()
+          if ([string]::IsNullOrWhiteSpace($imageTag)) {
+            throw 'workflow input image_tag is empty.'
+          }
+
+          $dockerServerOs = (& docker version --format '{{.Server.Os}}' 2>$null).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to query Docker server mode on self-hosted runner.'
+          }
+          if ($dockerServerOs -ne 'windows') {
+            throw "Self-hosted runner Docker mode must be windows. Current: $dockerServerOs"
+          }
+
+          & docker image inspect $imageTag > $null 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Image already available locally: $imageTag"
+            exit 0
+          }
+
+          Write-Host "Image not present locally, pulling: $imageTag"
+          & docker pull $imageTag
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to pull required image: $imageTag"
+          }
+
+          & docker image inspect $imageTag > $null 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pulled image could not be inspected: $imageTag"
+          }
 
       - name: Runner sanity (dedicated host contract)
         uses: ./.github/actions/runner-bootstrap
@@ -207,6 +290,21 @@ jobs:
             "- Classification: $classification",
             "- Summary path: " + ($(if ([string]::IsNullOrWhiteSpace($summaryPath)) { '<not-found>' } else { $summaryPath }))
           ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Assert certification evidence contract
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $minimumRepeatRuns = [int]'${{ inputs.repeat_runs }}'
+          if ($minimumRepeatRuns -le 0) {
+            $minimumRepeatRuns = 1
+          }
+          & .\Tooling\Assert-ImageCertificationEvidence.ps1 `
+            -SummaryPath '${{ steps.classify.outputs.summary_path }}' `
+            -ExpectedContractProfile '${{ inputs.contract_profile }}' `
+            -ExpectedImageTag '${{ inputs.image_tag }}' `
+            -MinRepeatRuns $minimumRepeatRuns
 
       - name: Upload certification artifacts
         if: always()
