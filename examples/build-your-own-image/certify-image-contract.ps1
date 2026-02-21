@@ -222,7 +222,7 @@ elseif ($failureCount -eq 0 -and $passCount -eq $effectiveRepeatRuns) {
 elseif ($hasMissingImageError -or $hasPreflightOrExecutionError) {
     $classification = 'verifier_execution_error'
 }
-elseif ($anyMinus350000 -or ($runResults | Where-Object { $_.final_exit_code -ne $null -and $_.final_exit_code -ne 0 }).Count -gt 0) {
+elseif ($anyMinus350000 -or @($runResults | Where-Object { $_.final_exit_code -ne $null -and $_.final_exit_code -ne 0 }).Count -gt 0) {
     $classification = 'cli_connect_fail'
 }
 elseif (-not $allPortListening) {
