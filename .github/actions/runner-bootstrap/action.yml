@@ -1,0 +1,72 @@
+name: Runner Bootstrap
+description: Runs dedicated host contract sanity checks for self-hosted runners.
+inputs:
+  runner_sanity:
+    description: Run Tooling/Check-Runner.ps1.
+    required: false
+    default: 'true'
+  enforce_host_contract:
+    description: Enable dedicated host contract enforcement.
+    required: false
+    default: 'false'
+  host_contract_path:
+    description: Path to dedicated host contract file.
+    required: false
+    default: Tooling/runner-host-contract.json
+  required_labview_years:
+    description: Optional LabVIEW year override (comma separated).
+    required: false
+    default: ''
+  required_cli_major:
+    description: Optional CLI major override.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Runner sanity
+      if: ${{ inputs.runner_sanity == 'true' }}
+      shell: pwsh
+      run: |
+        $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'Tooling\Check-Runner.ps1'
+        if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+          throw "Check-Runner.ps1 not found at $scriptPath"
+        }
+
+        $args = @(
+          '-NoProfile',
+          '-File', $scriptPath,
+          '-RepoRoot', $env:GITHUB_WORKSPACE,
+          '-HostContractPath', '${{ inputs.host_contract_path }}'
+        )
+
+        $enforceInput = '${{ inputs.enforce_host_contract }}'.Trim().ToLowerInvariant()
+        $enforceFromEnv = if (Test-Path 'Env:LVIE_ENFORCE_DEDICATED_HOST_CONTRACT') {
+          $env:LVIE_ENFORCE_DEDICATED_HOST_CONTRACT.Trim().ToLowerInvariant()
+        } else {
+          ''
+        }
+        if ($enforceInput -eq 'true' -or $enforceFromEnv -notin @('', '0', 'false', 'no')) {
+          $args += '-EnforceHostContract'
+        }
+
+        $requiredYears = '${{ inputs.required_labview_years }}'
+        if ([string]::IsNullOrWhiteSpace($requiredYears)) {
+          $requiredYears = $env:LVIE_REQUIRED_LABVIEW_YEARS
+        }
+        if (-not [string]::IsNullOrWhiteSpace($requiredYears)) {
+          $args += @('-RequiredLabVIEWYears', $requiredYears)
+        }
+
+        $requiredCliMajor = '${{ inputs.required_cli_major }}'
+        if ([string]::IsNullOrWhiteSpace($requiredCliMajor)) {
+          $requiredCliMajor = $env:LVIE_REQUIRED_CLI_MAJOR
+        }
+        if (-not [string]::IsNullOrWhiteSpace($requiredCliMajor)) {
+          $args += @('-RequiredCliMajor', $requiredCliMajor)
+        }
+
+        & pwsh @args
+        if ($LASTEXITCODE -ne 0) {
+          throw "Check-Runner.ps1 failed with exit code $LASTEXITCODE."
+        }
