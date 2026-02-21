@@ -2,6 +2,7 @@
 param(
     [string]$ImageTag = 'labview-custom-windows:2020q1-windows',
     [Parameter(Mandatory = $true)][string]$LvFeedLocation,
+    [string]$BaseImage = 'mcr.microsoft.com/windows/server:ltsc2022',
     [string]$PersistVolumeName = 'vm',
     [string]$Phase1Tag = '',
     [string]$Phase2Tag = '',
@@ -9,16 +10,30 @@ param(
     [string]$LvYear = '2020',
     [string]$LvCorePackage = 'ni-labview-2020-core-en',
     [string]$LvCliPackage = 'ni-labview-command-line-interface-x86',
-    [string]$LvCliPort = '3366',
+    [string]$LvCliPort = '3363',
     [ValidateSet('0', '1')][string]$InstallOptionalHelp = '0',
     [string]$DnsServer = '1.1.1.1',
     [string]$NipmInstallerDownloadUrl = 'https://download.ni.com/support/nipkg/products/ni-package-manager/installers/NIPackageManager26.0.0.exe',
     [string]$NipmInstallerDownloadSha256 = 'A2AF381482F85ABA2A963676EAC436F96D69572A9EBFBAF85FF26C372A1995C3',
-    [string]$NipmInstallerSourcePath = ''
+    [string]$NipmInstallerSourcePath = '',
+    [ValidateRange(2, 12)][int]$MaxResumePhases = 4
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$LvCliPort = [string]$LvCliPort
+if ([string]::IsNullOrWhiteSpace($LvCliPort)) {
+    $LvCliPort = '3363'
+}
+$LvCliPort = $LvCliPort.Trim()
+if ($LvCliPort -ne '3363') {
+    throw "LvCliPort must be set to '3363' for the lv2020x64 image path. Received: '$LvCliPort'"
+}
+if ([string]::IsNullOrWhiteSpace($BaseImage)) {
+    throw 'BaseImage cannot be empty.'
+}
+$BaseImage = $BaseImage.Trim()
 
 function Get-DerivedImageTag {
     param(
@@ -31,6 +46,21 @@ function Get-DerivedImageTag {
     }
 
     return "{0}:{1}" -f $BaseTag, $Suffix
+}
+
+function Get-PhaseTag {
+    param(
+        [Parameter(Mandatory = $true)][int]$PhaseIndex
+    )
+
+    if ($PhaseIndex -eq 1 -and -not [string]::IsNullOrWhiteSpace($Phase1Tag)) {
+        return $Phase1Tag
+    }
+    if ($PhaseIndex -eq 2 -and -not [string]::IsNullOrWhiteSpace($Phase2Tag)) {
+        return $Phase2Tag
+    }
+
+    return (Get-DerivedImageTag -BaseTag $ImageTag -Suffix ("phase{0}" -f $PhaseIndex))
 }
 
 function Invoke-DockerCommand {
@@ -73,6 +103,14 @@ function Remove-ImageIfPresent {
     & docker image inspect $Tag *> $null
     if ($LASTEXITCODE -eq 0) {
         & docker image rm $Tag *> $null
+    }
+}
+
+function Ensure-Directory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        New-Item -Path $Path -ItemType Directory -Force | Out-Null
     }
 }
 
@@ -121,6 +159,89 @@ function Convert-ToDockerContainerPath {
     }
 
     return ($Path -replace '\\', '/')
+}
+
+function Get-StateField {
+    param(
+        [object]$StateObject,
+        [string]$FieldName
+    )
+
+    if ($null -eq $StateObject) {
+        return ''
+    }
+    if ($StateObject -isnot [pscustomobject] -and $StateObject -isnot [hashtable]) {
+        return ''
+    }
+    if (-not $StateObject.PSObject.Properties.Name.Contains($FieldName)) {
+        return ''
+    }
+
+    return [string]$StateObject.$FieldName
+}
+
+function Get-InstallStateSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$PersistVolume,
+        [Parameter(Mandatory = $true)][string]$ReaderImage
+    )
+
+    $stateReadCommand = @'
+$statePath = 'C:\lv-persist\state.json'
+if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+  Get-Content -LiteralPath $statePath -Raw
+}
+'@
+
+    $args = @(
+        'run',
+        '--rm',
+        '--volume', ('{0}:C:\lv-persist' -f $PersistVolume),
+        $ReaderImage,
+        'powershell',
+        '-NoProfile',
+        '-Command', $stateReadCommand
+    )
+
+    $output = & docker @args 2>&1
+    $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+    if ($exitCode -ne 0) {
+        return [ordered]@{
+            available = $false
+            parse_ok = $false
+            raw = ''
+            error = "Unable to read persisted installer state (docker exit $exitCode)."
+        }
+    }
+
+    $raw = (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return [ordered]@{
+            available = $false
+            parse_ok = $false
+            raw = ''
+            error = 'state.json is missing or empty.'
+        }
+    }
+
+    try {
+        $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+        return [ordered]@{
+            available = $true
+            parse_ok = $true
+            raw = $raw
+            parsed = $parsed
+            error = ''
+        }
+    }
+    catch {
+        return [ordered]@{
+            available = $true
+            parse_ok = $false
+            raw = $raw
+            error = "state.json parse failure: $($_.Exception.Message)"
+        }
+    }
 }
 
 function Write-InstallerHash {
@@ -239,18 +360,31 @@ if ([string]::IsNullOrWhiteSpace($Phase2Tag)) {
     $Phase2Tag = Get-DerivedImageTag -BaseTag $ImageTag -Suffix 'phase2'
 }
 
-$phase1Container = "lv2020x64-phase1-{0}" -f ([Guid]::NewGuid().ToString('N').Substring(0, 8))
-$phase2Container = "lv2020x64-phase2-{0}" -f ([Guid]::NewGuid().ToString('N').Substring(0, 8))
-$phase1Created = $false
-$phase2Created = $false
-$phase1TagCreated = $false
-$phase2TagCreated = $false
+$statusRoot = Join-Path $repoRoot 'builds\status'
+Ensure-Directory -Path $statusRoot
+$summaryTimestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss-fff')
+$summaryPath = Join-Path $statusRoot ("lv2020x64-build-summary-{0}.json" -f $summaryTimestamp)
+$installSessionId = [Guid]::NewGuid().ToString()
+$intermediatePhaseTags = New-Object System.Collections.Generic.List[string]
+$phaseRecords = New-Object System.Collections.Generic.List[object]
+$activePhaseContainer = ''
+$currentImageTag = $seedTag
+$buildOutcome = 'failed'
+$buildErrorMessage = ''
+$finalExitCode = 1
+$finalSourceTag = ''
+$lastCursor = ''
+$lastStep = ''
+$lastMandatoryPackage = ''
+$lastCheckpointWasReboot = $false
 
 Write-Host "Repo root: $repoRoot"
 Write-Host "Final image tag: $ImageTag"
+Write-Host "Base image: $BaseImage"
 Write-Host "Volume: $PersistVolumeName"
 Write-Host "Container DNS: $DnsServer"
 Write-Host "NIPM download URL: $NipmInstallerDownloadUrl"
+Write-Host "Max resume phases: $MaxResumePhases"
 
 if (-not (Test-Path -Path $dockerfilePath)) {
     throw "Required file not found: $dockerfilePath"
@@ -270,7 +404,7 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Unable to determine the current git branch.'
 }
 if ($branchName -ne 'lv2020x64') {
-    throw "This script must run on branch 'lv2020x64'. Current branch: $branchName"
+    Write-Warning "Expected branch 'lv2020x64'; current branch is '$branchName'. Continuing."
 }
 
 $dockerServerOs = (& docker version --format '{{.Server.Os}}' 2>$null).Trim()
@@ -281,8 +415,13 @@ if ($dockerServerOs -ne 'windows') {
     throw "Docker server is not in Windows mode. Current server OS: $dockerServerOs"
 }
 
-& docker volume inspect $PersistVolumeName *> $null
+& docker volume ls --filter ("name=^{0}$" -f $PersistVolumeName) --format '{{.Name}}' > $null 2>&1
 if ($LASTEXITCODE -ne 0) {
+    throw "Unable to query Docker volumes. Ensure Docker Desktop is running and accessible."
+}
+
+$volumeExists = ((& docker volume ls --filter ("name=^{0}$" -f $PersistVolumeName) --format '{{.Name}}' 2>$null) | ForEach-Object { $_.Trim() }) -contains $PersistVolumeName
+if (-not $volumeExists) {
     Invoke-DockerCommand -Arguments @('volume', 'create', $PersistVolumeName) -Description "create volume '$PersistVolumeName'" | Out-Null
 }
 
@@ -292,6 +431,7 @@ try {
         '--file', $dockerfilePath,
         '--tag', $seedTag,
         '--build-arg', "DEFER_LV_INSTALL=1",
+        '--build-arg', "BASE_IMAGE=$BaseImage",
         '--build-arg', "LV_YEAR=$LvYear",
         '--build-arg', "LV_FEED_LOCATION=$LvFeedLocation",
         '--build-arg', "LV_CORE_PACKAGE=$LvCorePackage",
@@ -303,103 +443,195 @@ try {
     Invoke-DockerCommand -Arguments $buildArgs -Description 'build seed image' | Out-Null
 
     $volumeArg = '{0}:C:\lv-persist' -f $PersistVolumeName
-    $phase1Args = @(
-        'run',
-        '--name', $phase1Container,
-        '--volume', $volumeArg
-    )
-    if (-not [string]::IsNullOrWhiteSpace($DnsServer)) {
-        $phase1Args += @('--dns', $DnsServer)
-    }
-    $phase1Args += @(
-        '--env', "LV_FEED_LOCATION=$LvFeedLocation",
-        '--env', "LV_YEAR=$LvYear",
-        '--env', "LV_CORE_PACKAGE=$LvCorePackage",
-        '--env', "LV_CLI_PACKAGE=$LvCliPackage",
-        '--env', "LV_CLI_PORT=$LvCliPort",
-        '--env', "INSTALL_OPTIONAL_HELP=$InstallOptionalHelp",
-        $seedTag,
-        'powershell',
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', 'C:\ni\resources\Install-LV2020x64.ps1',
-        '-PersistRoot', 'C:\lv-persist'
-    )
-    $phase1ExitCode = Invoke-DockerCommand -Arguments $phase1Args -Description 'phase1 install' -AllowedExitCodes @(0, 194)
-    $phase1Created = $true
+    $completed = $false
 
-    if ($phase1ExitCode -eq 194) {
-        Write-Host 'Phase 1 reached reboot-required checkpoint; committing phase1 image.'
-        Invoke-DockerCommand -Arguments @('commit', $phase1Container, $Phase1Tag) -Description 'commit phase1 image' | Out-Null
-        $phase1TagCreated = $true
-        Remove-ContainerIfPresent -ContainerName $phase1Container
-        $phase1Created = $false
-
-        $phase2Args = @(
-            'run',
-            '--name', $phase2Container,
-            '--volume', $volumeArg
-        )
-        if (-not [string]::IsNullOrWhiteSpace($DnsServer)) {
-            $phase2Args += @('--dns', $DnsServer)
-        }
-        $phase2Args += @(
-            '--env', "LV_FEED_LOCATION=$LvFeedLocation",
-            '--env', "LV_YEAR=$LvYear",
-            '--env', "LV_CORE_PACKAGE=$LvCorePackage",
-            '--env', "LV_CLI_PACKAGE=$LvCliPackage",
-            '--env', "LV_CLI_PORT=$LvCliPort",
-            '--env', "INSTALL_OPTIONAL_HELP=$InstallOptionalHelp",
-            $Phase1Tag,
-            'powershell',
-            '-NoProfile',
-            '-ExecutionPolicy', 'Bypass',
-            '-File', 'C:\ni\resources\Install-LV2020x64.ps1',
-            '-PersistRoot', 'C:\lv-persist'
-        )
-        $phase2ExitCode = Invoke-DockerCommand -Arguments $phase2Args -Description 'phase2 install' -AllowedExitCodes @(0, 194)
-        $phase2Created = $true
-
-        if ($phase2ExitCode -eq 194) {
-            throw "Phase 2 still requires reboot. Inspect '$PersistVolumeName\\state.json' and container logs."
+    for ($phaseIndex = 1; $phaseIndex -le $MaxResumePhases; $phaseIndex++) {
+        $phaseContainer = "lv2020x64-phase{0}-{1}" -f $phaseIndex, ([Guid]::NewGuid().ToString('N').Substring(0, 8))
+        $activePhaseContainer = $phaseContainer
+        $phaseExitCode = -1
+        $phaseTag = ''
+        $phaseStateInfo = $null
+        $phaseState = $null
+        $phaseStuckCheckpoint = $false
+        $phaseRecord = [ordered]@{
+            phase_index = $phaseIndex
+            source_image = $currentImageTag
+            container_name = $phaseContainer
+            exit_code = $null
+            phase_tag = $null
+            state_available = $false
+            state_parse_ok = $false
+            state_snapshot = $null
+            state_raw = ''
+            state_error = ''
+            checkpoint = $false
+            stuck_reboot_checkpoint = $false
         }
 
-        Invoke-DockerCommand -Arguments @('commit', $phase2Container, $Phase2Tag) -Description 'commit phase2 image' | Out-Null
-        $phase2TagCreated = $true
-        Invoke-DockerCommand -Arguments @('tag', $Phase2Tag, $ImageTag) -Description 'tag final image from phase2 image' | Out-Null
-        Remove-ContainerIfPresent -ContainerName $phase2Container
-        $phase2Created = $false
-    }
-    elseif ($phase1ExitCode -eq 0) {
-        Invoke-DockerCommand -Arguments @('commit', $phase1Container, $Phase1Tag) -Description 'commit phase1 image' | Out-Null
-        $phase1TagCreated = $true
-        Invoke-DockerCommand -Arguments @('commit', $phase1Container, $ImageTag) -Description 'commit final image from phase1 container' | Out-Null
-        Remove-ContainerIfPresent -ContainerName $phase1Container
-        $phase1Created = $false
-    }
-    else {
-        throw "Unexpected phase1 exit code: $phase1ExitCode"
+        try {
+            $phaseArgs = @(
+                'run',
+                '--name', $phaseContainer,
+                '--volume', $volumeArg
+            )
+            if (-not [string]::IsNullOrWhiteSpace($DnsServer)) {
+                $phaseArgs += @('--dns', $DnsServer)
+            }
+            $phaseArgs += @(
+                '--env', "LV_FEED_LOCATION=$LvFeedLocation",
+                '--env', "LV_YEAR=$LvYear",
+                '--env', "LV_CORE_PACKAGE=$LvCorePackage",
+                '--env', "LV_CLI_PACKAGE=$LvCliPackage",
+                '--env', "LV_CLI_PORT=$LvCliPort",
+                '--env', "INSTALL_OPTIONAL_HELP=$InstallOptionalHelp",
+                '--env', "LV_INSTALL_SESSION_ID=$installSessionId",
+                $currentImageTag,
+                'powershell',
+                '-NoProfile',
+                '-File', 'C:\ni\resources\Install-LV2020x64.ps1',
+                '-PersistRoot', 'C:\lv-persist',
+                '-SessionId', $installSessionId,
+                '-PhaseIndex', [string]$phaseIndex
+            )
+            $phaseExitCode = Invoke-DockerCommand -Arguments $phaseArgs -Description ("phase{0} install" -f $phaseIndex) -AllowedExitCodes @(0, 194)
+            $phaseRecord.exit_code = $phaseExitCode
+
+            $phaseStateInfo = Get-InstallStateSnapshot -PersistVolume $PersistVolumeName -ReaderImage $BaseImage
+            $phaseRecord.state_available = [bool]$phaseStateInfo.available
+            $phaseRecord.state_parse_ok = [bool]$phaseStateInfo.parse_ok
+            $phaseRecord.state_raw = [string]$phaseStateInfo.raw
+            $phaseRecord.state_error = [string]$phaseStateInfo.error
+            if ($phaseRecord.state_parse_ok) {
+                $phaseState = $phaseStateInfo.parsed
+                $phaseRecord.state_snapshot = $phaseState
+            }
+
+            if ($phaseExitCode -eq 194) {
+                $phaseTag = Get-PhaseTag -PhaseIndex $phaseIndex
+                $phaseRecord.phase_tag = $phaseTag
+                $phaseRecord.checkpoint = $true
+                Invoke-DockerCommand -Arguments @('commit', $phaseContainer, $phaseTag) -Description ("commit checkpoint phase{0} image" -f $phaseIndex) | Out-Null
+                $intermediatePhaseTags.Add($phaseTag) | Out-Null
+
+                $currentCursor = Get-StateField -StateObject $phaseState -FieldName 'resume_cursor'
+                $currentStep = Get-StateField -StateObject $phaseState -FieldName 'step'
+                $currentMandatoryPackage = Get-StateField -StateObject $phaseState -FieldName 'mandatory_package'
+
+                if ($lastCheckpointWasReboot -and
+                    $currentCursor -eq $lastCursor -and
+                    $currentStep -eq $lastStep -and
+                    $currentMandatoryPackage -eq $lastMandatoryPackage) {
+                    $phaseStuckCheckpoint = $true
+                    $phaseRecord.stuck_reboot_checkpoint = $true
+                    $buildOutcome = 'stuck_reboot_checkpoint'
+                    $finalExitCode = 194
+                    $buildErrorMessage = ("Stuck reboot checkpoint detected at phase {0}. resume_cursor='{1}', step='{2}', mandatory_package='{3}'." -f $phaseIndex, $currentCursor, $currentStep, $currentMandatoryPackage)
+                }
+
+                $lastCursor = $currentCursor
+                $lastStep = $currentStep
+                $lastMandatoryPackage = $currentMandatoryPackage
+                $lastCheckpointWasReboot = $true
+
+                $currentImageTag = $phaseTag
+            }
+            elseif ($phaseExitCode -eq 0) {
+                Invoke-DockerCommand -Arguments @('commit', $phaseContainer, $ImageTag) -Description ("commit final image from phase{0} container" -f $phaseIndex) | Out-Null
+                $phaseRecord.phase_tag = $ImageTag
+                $finalSourceTag = $currentImageTag
+                $buildOutcome = 'completed'
+                $finalExitCode = 0
+                $completed = $true
+                $lastCheckpointWasReboot = $false
+            }
+        }
+        finally {
+            $phaseRecords.Add([pscustomobject]$phaseRecord) | Out-Null
+            if (-not $KeepIntermediate.IsPresent) {
+                Remove-ContainerIfPresent -ContainerName $phaseContainer
+            }
+            $activePhaseContainer = ''
+        }
+
+        if ($phaseStuckCheckpoint) {
+            break
+        }
+        if ($completed) {
+            break
+        }
     }
 
-    if (-not $KeepIntermediate.IsPresent) {
-        Remove-ImageIfPresent -Tag $seedTag
-        if ($phase1TagCreated) {
-            Remove-ImageIfPresent -Tag $Phase1Tag
+    if (-not $completed -and [string]::IsNullOrWhiteSpace($buildErrorMessage)) {
+        if ($buildOutcome -eq 'stuck_reboot_checkpoint') {
+            # buildErrorMessage already assigned by stuck checkpoint path.
         }
-        if ($phase2TagCreated) {
-            Remove-ImageIfPresent -Tag $Phase2Tag
+        elseif ($phaseRecords.Count -ge $MaxResumePhases) {
+            $buildOutcome = 'max_resume_phases_exceeded'
+            $finalExitCode = 194
+            $buildErrorMessage = "Reached MaxResumePhases=$MaxResumePhases without completion."
+        }
+        else {
+            $buildOutcome = 'failed'
+            $finalExitCode = 1
+            $buildErrorMessage = 'Resumable build ended without a successful completion state.'
         }
     }
-
-    Write-Host "Resumable build completed successfully. Final image: $ImageTag"
+}
+catch {
+    if ([string]::IsNullOrWhiteSpace($buildErrorMessage)) {
+        $buildErrorMessage = $_.Exception.Message
+    }
+    if ($finalExitCode -eq 0) {
+        $finalExitCode = 1
+    }
+    if ($buildOutcome -eq 'completed') {
+        $buildOutcome = 'failed'
+    }
 }
 finally {
     if (-not $KeepIntermediate.IsPresent) {
-        if ($phase1Created) {
-            Remove-ContainerIfPresent -ContainerName $phase1Container
+        if (-not [string]::IsNullOrWhiteSpace($activePhaseContainer)) {
+            Remove-ContainerIfPresent -ContainerName $activePhaseContainer
         }
-        if ($phase2Created) {
-            Remove-ContainerIfPresent -ContainerName $phase2Container
+        Remove-ImageIfPresent -Tag $seedTag
+        foreach ($tag in $intermediatePhaseTags) {
+            Remove-ImageIfPresent -Tag $tag
         }
     }
+
+    $summary = [ordered]@{
+        schema_version = '1.0'
+        generated_utc = (Get-Date).ToUniversalTime().ToString('o')
+        repo_root = $repoRoot
+        image_tag = $ImageTag
+        final_source_tag = $finalSourceTag
+        base_image = $BaseImage
+        persist_volume = $PersistVolumeName
+        dns_server = $DnsServer
+        max_resume_phases = $MaxResumePhases
+        keep_intermediate = $KeepIntermediate.IsPresent
+        install_session_id = $installSessionId
+        lv_year = $LvYear
+        lv_core_package = $LvCorePackage
+        lv_cli_package = $LvCliPackage
+        lv_cli_port = $LvCliPort
+        build_outcome = $buildOutcome
+        final_exit_code = $finalExitCode
+        error_message = $buildErrorMessage
+        summary_path = $summaryPath
+        phase_count = $phaseRecords.Count
+        phases = $phaseRecords
+    }
+
+    $summary | ConvertTo-Json -Depth 12 | Set-Content -Path $summaryPath -Encoding utf8
+    Write-Host "build_summary_path=$summaryPath"
 }
+
+if ($finalExitCode -ne 0 -or -not [string]::IsNullOrWhiteSpace($buildErrorMessage)) {
+    if ([string]::IsNullOrWhiteSpace($buildErrorMessage)) {
+        $buildErrorMessage = "Resumable build failed with outcome '$buildOutcome'. See summary at $summaryPath"
+    }
+    throw $buildErrorMessage
+}
+
+Write-Host "Resumable build completed successfully. Final image: $ImageTag"
