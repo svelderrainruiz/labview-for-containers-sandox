@@ -16,7 +16,14 @@ Use this approach if you need to:
 - [Default lv2020x64 Contract](#default-lv2020x64-contract)
 - [Fast Path: Dockerfile-Only Build](#fast-path-dockerfile-only-build)
 - [Restart-Aware Path (Recommended for -125071)](#restart-aware-path-recommended-for--125071)
+- [Confirm Baseline with Built-In MassCompile (No Clone)](#confirm-baseline-with-built-in-masscompile-no-clone)
 - [Troubleshooting Reboot-Required Installs](#troubleshooting-reboot-required-installs)
+- [Phase 3 Local PPL From Known Image](#phase-3-local-ppl-from-known-image)
+- [Troubleshooting Phase 3 PPL Builds](#troubleshooting-phase-3-ppl-builds)
+- [Split-Track Execution (2026 Throughput + 2020 Stabilization)](#split-track-execution-2026-throughput--2020-stabilization)
+- [Dedicated Validation Host Policy](#dedicated-validation-host-policy)
+- [Image Contract Certification](#image-contract-certification)
+- [2020 Promotion Freeze and Gate (Deferred)](#2020-promotion-freeze-and-gate-deferred)
 - [Engineered Prompt Template (lv2020x64)](#engineered-prompt-template-lv2020x64)
 - [Final Notes](#final-notes)
 
@@ -41,7 +48,7 @@ ARG LV_YEAR=2020
 ARG LV_FEED_LOCATION=
 ARG LV_CORE_PACKAGE=ni-labview-2020-core-en
 ARG LV_CLI_PACKAGE=ni-labview-command-line-interface-x86
-ARG LV_CLI_PORT=3366
+ARG LV_CLI_PORT=3363
 ARG INSTALL_OPTIONAL_HELP=0
 ARG DEFER_LV_INSTALL=0
 ```
@@ -68,7 +75,7 @@ $lvFeed = 'https://download.ni.com/support/nipkg/products/ni-l/' +
 
 docker build -t labview-custom-windows:2020q1-windows -f Dockerfile-windows `
   --build-arg LV_FEED_LOCATION=$lvFeed `
-  --build-arg LV_CLI_PORT=3366 `
+  --build-arg LV_CLI_PORT=3363 `
   --build-arg INSTALL_OPTIONAL_HELP=0
 ```
 
@@ -81,7 +88,8 @@ docker images
 ## Restart-Aware Path (Recommended for -125071)
 
 Use this path when NIPKG reports reboot-required (`Error -125071`).
-This flow persists checkpoint state in a Docker volume and resumes in phase 2.
+This flow persists checkpoint state in a Docker volume and resumes through a
+phase loop (`phase1..phaseN`) until completion or checkpoint failure.
 
 Script:
 
@@ -100,6 +108,7 @@ Parameters:
 - `-NipmInstallerSourcePath` optional host file override
 - `-Phase1Tag` and `-Phase2Tag` optional overrides
 - `-KeepIntermediate` optional switch
+- `-MaxResumePhases` default `4`
 
 Run:
 
@@ -128,9 +137,28 @@ What the script does:
 1. Ensures the named volume exists (creates it when missing).
 1. Uses `--dns` for phase containers (default `1.1.1.1`).
 1. Builds a seed image with `DEFER_LV_INSTALL=1`.
-1. Runs phase 1 install in a container with `-v vm:C:\lv-persist`.
-1. If phase 1 exits `194`, commits phase 1 and resumes phase 2.
-1. Commits and tags the final image on success.
+1. Runs install in `phase1..phaseN` containers with `-v vm:C:\lv-persist`.
+1. On each `194`, commits a checkpoint image `...-phase<index>` and resumes.
+1. Detects stuck reboot checkpoints when consecutive phases return `194` with
+   unchanged `resume_cursor` and package step.
+1. Stops at success (`0`) or when `-MaxResumePhases` is exceeded.
+1. Writes build summary JSON to `builds/status/lv2020x64-build-summary-*.json`.
+1. Enforces `LV_CLI_PORT=3363`; other values fail fast.
+
+## Confirm Baseline with Built-In MassCompile (No Clone)
+
+Use this check to verify image baseline behavior without mounting external repos.
+
+```powershell
+docker run --rm labview-custom-windows:2020q1-windows `
+  powershell -NoProfile -Command `
+  "LabVIEWCLI -LabVIEWPath 'C:\Program Files\National Instruments\LabVIEW 2020\LabVIEW.exe' -OperationName MassCompile -DirectoryToCompile 'C:\Program Files\National Instruments\LabVIEW 2020\examples\Arrays' -PortNumber 3363 -Headless"
+```
+
+Expected result:
+
+- Command exits `0`.
+- No `-350000` in output.
 
 Checkpoint artifacts written to the volume:
 
@@ -157,7 +185,8 @@ docker run --rm -v vm:C:\lv-persist mcr.microsoft.com/windows/server:ltsc2022 `
 ```
 
 1. If phase 2 still exits `194`, rerun with `-KeepIntermediate` and inspect
-   logs before retrying.
+   `builds/status/lv2020x64-build-summary-*.json` for checkpoint cursor and
+   outcome classification before retrying.
 
 ### Missing Feed Location
 
@@ -217,6 +246,205 @@ If CLI cannot connect:
    - `C:\Program Files\National Instruments\LabVIEW 2020\LabVIEW.ini`
    - `C:\Program Files (x86)\National Instruments\Shared\LabVIEW CLI\LabVIEWCLI.ini`
 
+
+## Phase 3 Local PPL From Known Image
+
+Use this path to build `lv_icon.lvlibp` from an already-built x64 image.
+
+Script:
+
+- `examples/build-your-own-image/build-lv-icon-ppl-from-image.ps1`
+
+Inputs:
+
+- `-ImageTag` default `labview-custom-windows:2020q1-windows-phase2`
+- `-IconEditorRepoRoot` optional; auto-resolves sibling icon-editor repo
+- `-LvYear` default `2020`
+- `-LvCliPort` default `3363`
+- `-BuildSpecName` default `Editor Packed Library`
+- `-OutputRelativePath` default `resource/plugins/lv_icon.lvlibp`
+- `-KeepContainer` optional switch
+- `-LogRoot` optional override for log output root
+
+Happy path:
+
+```powershell
+cd .\examples\build-your-own-image
+
+pwsh -NoProfile -File .\build-lv-icon-ppl-from-image.ps1 `
+  -ImageTag labview-custom-windows:2020q1-windows-phase2
+```
+
+Debug path (keep failed container):
+
+```powershell
+pwsh -NoProfile -File .\build-lv-icon-ppl-from-image.ps1 `
+  -ImageTag labview-custom-windows:2020q1-windows-phase2 `
+  -KeepContainer
+```
+
+Expected outputs:
+
+- PPL artifact: `<icon-editor-root>\resource\plugins\lv_icon.lvlibp`
+- Logs: `TestResults\agent-logs\ppl-phase3-<timestamp>\`
+- Summary: `summary.json` inside the run log folder
+
+## Troubleshooting Phase 3 PPL Builds
+
+### `-350000` LabVIEWCLI Connection Failure
+
+If you see CLI connection failures:
+
+1. Open run summary/logs under `TestResults\agent-logs\ppl-phase3-<timestamp>\`.
+1. Check `phase3-diag\port-listening.txt` and `phase3-diag\netstat-ano.txt`.
+1. Verify copied INI files under `phase3-diag\LabVIEW.ini` and `phase3-diag\LabVIEWCLI.ini`.
+1. Re-run with `-KeepContainer` to preserve state for manual inspection.
+
+### Missing Artifact With Zero-Like CLI Output
+
+If `ExecuteBuildSpec` appears to run but output is missing:
+
+1. Confirm `BuildSpecName` matches the project build spec.
+1. Confirm `OutputRelativePath` matches expected output location.
+1. Review `executebuildspec.log` and `collect-diagnostics.log` in the same run folder.
+
+## Split-Track Execution (2026 Throughput + 2020 Stabilization)
+
+Use this fork's split-track policy:
+
+- Throughput track: run Phase 3 artifact production against
+  `nationalinstruments/labview:2026q1-windows`.
+- Stabilization track: isolate LabVIEW 2020 diagnostics in a separate manual workflow.
+- Do not retag/publish `labview-custom-windows:2020q1-windows` in this pass.
+
+Local 2026 throughput wrapper:
+
+- `examples/build-your-own-image/run-phase3-throughput-2026.ps1`
+
+Wrapper contract:
+
+- `-IconEditorRepoRoot`
+- `-OutputRelativePath`
+- `-LvCliPort` (must be `3363`)
+- `-KeepContainer`
+- `-LogRoot`
+
+Run two consecutive executions (required for local repeatability):
+
+```powershell
+cd .\examples\build-your-own-image
+
+$iconRepo = 'D:\workspace\labview-icon-editor\labview-icon-editor'
+
+pwsh -NoProfile -File .\run-phase3-throughput-2026.ps1 `
+  -IconEditorRepoRoot $iconRepo
+
+pwsh -NoProfile -File .\run-phase3-throughput-2026.ps1 `
+  -IconEditorRepoRoot $iconRepo
+```
+
+Success criteria:
+
+- both runs exit `0`
+- both runs produce non-empty `resource\plugins\lv_icon.lvlibp`
+- each run writes a `summary.json` under
+  `TestResults\agent-logs\phase3-throughput-2026-<timestamp>\ppl-phase3-<timestamp>\`
+
+Conservative cleanup after runs:
+
+```powershell
+pwsh -NoProfile -File .\cleanup-windows-docker-artifacts.ps1 `
+  -Mode Conservative -Apply
+```
+
+Manual 2020 stabilization workflow:
+
+- `.github/workflows/labview-2020-stabilization-matrix.yml`
+
+Workflow inputs:
+
+- `image_tag`
+- `lv_year`
+- `lv_cli_port`
+- `runner_target`
+- `base_matrix`
+- `isolation_mode`
+- `max_cli_attempts`
+
+Stabilization outcomes:
+
+- `pass`
+- `port_not_listening`
+- `cli_connect_fail`
+- `environment_incompatible`
+
+Each run uploads a diagnostic artifact bundle containing `summary.json`,
+MassCompile logs, `lvtemporary_*`, netstat/process snapshots, and INI copies.
+
+## Dedicated Validation Host Policy
+
+For dedicated self-hosted Windows validation machines, use the host policy and
+enforcement runbook in:
+
+- `docs/labview-container-parity.md`
+
+Key rule: do not infer target year from the `LabVIEWCLI` binary version.
+Always pass explicit `LabVIEWPath` and `PortNumber` for operations.
+
+## Image Contract Certification
+
+Use this dedicated certification surface to produce machine-readable image
+contract evidence:
+
+- Profiles: `Tooling/image-contract-profiles.json`
+- Summary schema: `Tooling/image-cert-summary.schema.json`
+- Script: `examples/build-your-own-image/certify-image-contract.ps1`
+- Workflow: `.github/workflows/labview-image-contract-certification.yml`
+
+Certification runs aggregate repeated verifier passes and emit:
+
+- `builds/status/image-contract-cert-summary-*.json`
+- per-run diagnostics in `TestResults/agent-logs/certification-*`
+
+Manual workflow inputs:
+
+- `contract_profile`
+- `image_tag`
+- `runner_target`
+- `isolation_mode`
+- `max_cli_attempts`
+- `repeat_runs`
+
+For `2020-x64-stabilization`, certification may run on hosted lanes for
+diagnostics, but `promotion_eligible` remains `false` unless runner
+fingerprint indicates a real Server 2019 lane.
+
+Comparison procedure (triage discipline):
+
+1. Open previous failing references (`22262096511`, `22262277660`, `22262448572`).
+1. Compare classification and verifier metrics against latest
+   `image-contract-cert-summary-*.json`.
+1. Confirm whether failure is `port_not_listening`, `cli_connect_fail`, or
+   `environment_incompatible` before changing install/runtime settings.
+
+## 2020 Promotion Freeze and Gate (Deferred)
+
+Promotion remains blocked for `labview-custom-windows:2020q1-windows` until
+one real Server 2019 lane passes two fresh runs with all of:
+
+- `final_exit_code=0`
+- `contains_minus_350000=false`
+- `port_listening_before_cli=true`
+- `promotion_eligible=true` in certification summary
+
+Only after that gate:
+
+1. create a backup tag for the current canonical image
+1. retag validated candidate to `labview-custom-windows:2020q1-windows`
+
+If any gate fails, keep candidate tags only and continue stabilization without
+retagging canonical.
+
 ## Engineered Prompt Template (lv2020x64)
 
 Use this prompt to ask an AI assistant for reproducible updates:
@@ -235,7 +463,7 @@ Hard requirements:
    - LV_YEAR=2020
    - LV_CORE_PACKAGE=ni-labview-2020-core-en
    - LV_CLI_PACKAGE=ni-labview-command-line-interface-x86
-   - LV_CLI_PORT=3366
+   - LV_CLI_PORT=3363
    - INSTALL_OPTIONAL_HELP=0
 2) Treat LV_FEED_LOCATION as required for non-deferred install paths.
 3) Mandatory packages must fail hard if package IDs are invalid.

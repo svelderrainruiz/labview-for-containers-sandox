@@ -126,9 +126,9 @@ jobs:
           @(
             "### LabVIEW 2020 Stabilization Result",
             "- Runner lane: hosted-2022",
-            "- Image: `${{ inputs.image_tag }}`",
-            "- Isolation: `${{ inputs.isolation_mode }}`",
-            "- Classification: `$classification`",
+            "- Image: ${{ inputs.image_tag }}",
+            "- Isolation: ${{ inputs.isolation_mode }}",
+            "- Classification: $classification",
             "- Summary path: " + ($(if ($null -ne $summaryPath) { $summaryPath } else { '<not-found>' }))
           ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
@@ -238,9 +238,9 @@ jobs:
           @(
             "### LabVIEW 2020 Stabilization Result",
             "- Runner lane: self-hosted-2019",
-            "- Image: `${{ inputs.image_tag }}`",
-            "- Isolation: `${{ inputs.isolation_mode }}`",
-            "- Classification: `$classification`",
+            "- Image: ${{ inputs.image_tag }}",
+            "- Isolation: ${{ inputs.isolation_mode }}",
+            "- Classification: $classification",
             "- Summary path: " + ($(if ($null -ne $summaryPath) { $summaryPath } else { '<not-found>' }))
           ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 

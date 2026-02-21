@@ -1,0 +1,124 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LabVIEW Image Contract Certification Summary",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_utc",
+    "contract_profile",
+    "image_tag",
+    "runner_fingerprint",
+    "verification_metrics",
+    "classification",
+    "promotion_eligible",
+    "reasons",
+    "source_log_paths"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "generated_utc": {
+      "type": "string"
+    },
+    "contract_profile": {
+      "type": "string"
+    },
+    "image_tag": {
+      "type": "string"
+    },
+    "runner_target": {
+      "type": "string"
+    },
+    "runner_fingerprint": {
+      "type": "object",
+      "required": [
+        "os_caption",
+        "os_version",
+        "os_build",
+        "docker_server_os",
+        "is_real_server2019"
+      ],
+      "properties": {
+        "os_caption": {
+          "type": "string"
+        },
+        "os_version": {
+          "type": "string"
+        },
+        "os_build": {
+          "type": "string"
+        },
+        "docker_server_os": {
+          "type": "string"
+        },
+        "is_real_server2019": {
+          "type": "boolean"
+        }
+      }
+    },
+    "verification_metrics": {
+      "type": "object",
+      "required": [
+        "repeat_runs_requested",
+        "runs_completed",
+        "pass_count",
+        "failure_count",
+        "all_runs_port_listening",
+        "any_minus_350000",
+        "run_results"
+      ],
+      "properties": {
+        "repeat_runs_requested": {
+          "type": "integer"
+        },
+        "runs_completed": {
+          "type": "integer"
+        },
+        "pass_count": {
+          "type": "integer"
+        },
+        "failure_count": {
+          "type": "integer"
+        },
+        "all_runs_port_listening": {
+          "type": "boolean"
+        },
+        "any_minus_350000": {
+          "type": "boolean"
+        },
+        "run_results": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "port_not_listening",
+        "cli_connect_fail",
+        "environment_incompatible",
+        "verifier_execution_error"
+      ]
+    },
+    "promotion_eligible": {
+      "type": "boolean"
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source_log_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
