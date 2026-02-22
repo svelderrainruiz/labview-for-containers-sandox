@@ -96,6 +96,10 @@ $lvYear = [string]$profile.lv_year
 $lvCliPort = [string]$profile.lv_cli_port
 $directoryToCompile = [string]$profile.directory_to_compile
 $requiresRealServer2019 = [bool]$profile.requires_real_server2019
+$requirePortListener = $true
+if ($profile.PSObject.Properties.Name.Contains('require_port_listener')) {
+    $requirePortListener = [bool]$profile.require_port_listener
+}
 $profileRepeatRuns = [int]$profile.required_repeat_runs
 $effectiveRepeatRuns = if ($RepeatRuns -gt 0) { [int]$RepeatRuns } else { [int]$profileRepeatRuns }
 if ($effectiveRepeatRuns -lt 1) {
@@ -155,7 +159,8 @@ for ($index = 1; $index -le $effectiveRepeatRuns; $index++) {
             $runFinalExit = if ($null -ne $runSummary.final_exit_code) { [int]$runSummary.final_exit_code } else { $null }
             $runContains350000 = [bool]$runSummary.contains_minus_350000
             $runPortListening = [bool]$runSummary.port_listening_before_cli
-            $runPass = [bool]$runSummary.run_succeeded -and ($runFinalExit -eq 0) -and (-not $runContains350000) -and $runPortListening
+            $listenerGateSatisfied = if ($requirePortListener) { $runPortListening } else { $true }
+            $runPass = [bool]$runSummary.run_succeeded -and ($runFinalExit -eq 0) -and (-not $runContains350000) -and $listenerGateSatisfied
         }
         catch {
             if ([string]::IsNullOrWhiteSpace($runError)) {
@@ -225,7 +230,7 @@ elseif ($hasMissingImageError -or $hasPreflightOrExecutionError) {
 elseif ($anyMinus350000 -or @($runResults | Where-Object { $_.final_exit_code -ne $null -and $_.final_exit_code -ne 0 }).Count -gt 0) {
     $classification = 'cli_connect_fail'
 }
-elseif (-not $allPortListening) {
+elseif ($requirePortListener -and -not $allPortListening) {
     $classification = 'port_not_listening'
 }
 
@@ -237,6 +242,10 @@ elseif ($classification -eq 'port_not_listening') {
 }
 elseif ($classification -eq 'cli_connect_fail') {
     $reasons.Add('At least one run had -350000 or a non-zero final_exit_code.') | Out-Null
+}
+
+if ($classification -eq 'pass' -and -not $requirePortListener -and -not $allPortListening) {
+    $reasons.Add('Port listener was not enforced for this profile; pass was determined by CLI outcome metrics.') | Out-Null
 }
 elseif ($classification -eq 'verifier_execution_error') {
     if ($hasMissingImageError) {
@@ -290,7 +299,7 @@ Write-Host "cert_summary_path=$certSummaryPath"
 Write-Host "cert_classification=$classification"
 Write-Host "promotion_eligible=$promotionEligible"
 
-if ($env:GITHUB_OUTPUT) {
+if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
     Add-Content -Path $env:GITHUB_OUTPUT -Value ("cert_summary_path={0}" -f $certSummaryPath)
     Add-Content -Path $env:GITHUB_OUTPUT -Value ("cert_classification={0}" -f $classification)
     Add-Content -Path $env:GITHUB_OUTPUT -Value ("promotion_eligible={0}" -f $promotionEligible.ToString().ToLowerInvariant())
