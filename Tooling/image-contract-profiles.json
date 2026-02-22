@@ -4,15 +4,20 @@
     "2020-x64-stabilization": {
       "lv_year": "2020",
       "lv_cli_port": "3363",
+      "port_contract_scope": "container-image-contract",
+      "notes": "Intentional split-track override. Host-native contract remains 2020/64=3366 in Tooling/labviewcli-port-contract.json.",
       "directory_to_compile": "C:\\Program Files\\National Instruments\\LabVIEW 2020\\examples\\Arrays",
       "requires_real_server2019": true,
+      "require_port_listener": true,
       "required_repeat_runs": 2
     },
     "2026-x64-throughput": {
       "lv_year": "2026",
       "lv_cli_port": "3363",
+      "port_contract_scope": "container-image-contract",
       "directory_to_compile": "C:\\Program Files\\National Instruments\\LabVIEW 2026\\examples\\Arrays",
       "requires_real_server2019": false,
+      "require_port_listener": false,
       "required_repeat_runs": 2
     }
   }
