@@ -177,7 +177,6 @@ jobs:
     runs-on:
       - self-hosted
       - windows
-      - server2019
     timeout-minutes: 240
     env:
       LVIE_ENFORCE_DEDICATED_HOST_CONTRACT: '1'
@@ -186,40 +185,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Ensure self-hosted image availability (preflight)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $imageTag = '${{ inputs.image_tag }}'.Trim()
-          if ([string]::IsNullOrWhiteSpace($imageTag)) {
-            throw 'workflow input image_tag is empty.'
-          }
-
-          $dockerServerOs = (& docker version --format '{{.Server.Os}}' 2>$null).Trim()
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Unable to query Docker server mode on self-hosted runner.'
-          }
-          if ($dockerServerOs -ne 'windows') {
-            throw "Self-hosted runner Docker mode must be windows. Current: $dockerServerOs"
-          }
-
-          & docker image inspect $imageTag > $null 2>&1
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Image already available locally: $imageTag"
-            exit 0
-          }
-
-          Write-Host "Image not present locally, pulling: $imageTag"
-          & docker pull $imageTag
-          if ($LASTEXITCODE -ne 0) {
-            throw "Unable to pull required image: $imageTag"
-          }
-
-          & docker image inspect $imageTag > $null 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            throw "Pulled image could not be inspected: $imageTag"
-          }
 
       - name: Runner sanity (dedicated host contract)
         uses: ./.github/actions/runner-bootstrap
@@ -230,16 +195,40 @@ jobs:
           required_labview_years: ${{ env.LVIE_REQUIRED_LABVIEW_YEARS }}
           required_cli_major: ${{ env.LVIE_REQUIRED_CLI_MAJOR }}
 
-      - name: Validate real Server 2019 base
+      - name: Validate native self-hosted OS-build policy
+        id: native_os_policy
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $profilePath = '.\Tooling\image-contract-profiles.json'
+          if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
+            throw "Profile file not found: $profilePath"
+          }
+          $profiles = Get-Content -LiteralPath $profilePath -Raw | ConvertFrom-Json -ErrorAction Stop
+          $contractProfile = '${{ inputs.contract_profile }}'
+          if (-not $profiles.profiles.PSObject.Properties.Name.Contains($contractProfile)) {
+            throw "Unknown contract profile '$contractProfile' in $profilePath"
+          }
+          $profile = $profiles.profiles.$contractProfile
+          $allowedBuilds = @('17763')
+          if ($profile.PSObject.Properties.Name.Contains('native_allowed_os_builds')) {
+            $allowedBuilds = @($profile.native_allowed_os_builds | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          }
+
           $os = Get-CimInstance -ClassName Win32_OperatingSystem
           $caption = [string]$os.Caption
           $build = [string]$os.BuildNumber
-          if ($caption -notmatch 'Server' -or $build -ne '17763') {
-            throw "Runner must be a real Server 2019 lane for 2020 eligibility. Caption='$caption' Build='$build'"
+          $isAllowed = $allowedBuilds -contains $build
+          $isRealServer2019 = ($caption -match 'Server') -and ($build -eq '17763')
+          if (-not $isAllowed) {
+            $allowlist = $allowedBuilds -join ', '
+            throw "Runner OS build '$build' is not in native allowlist [$allowlist] for profile '$contractProfile'. Caption='$caption'"
           }
+          if (-not $isRealServer2019) {
+            Write-Warning "Runner build '$build' is allowlisted for native diagnostics but is not real Server 2019; promotion eligibility must remain false."
+          }
+          "is_real_server2019=$($isRealServer2019.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "os_build=$build" >> $env:GITHUB_OUTPUT
 
       - name: Run image contract certification
         id: certify
@@ -254,9 +243,12 @@ jobs:
             -ContractProfile '${{ inputs.contract_profile }}' `
             -ImageTag '${{ inputs.image_tag }}' `
             -RunnerTarget '${{ inputs.runner_target }}' `
+            -ExecutionSurface 'native-host' `
             -IsolationMode '${{ inputs.isolation_mode }}' `
             -MaxCliAttempts ([int]'${{ inputs.max_cli_attempts }}') `
             -RepeatRuns ([int]'${{ inputs.repeat_runs }}') `
+            -NativeLabVIEWPath 'C:\Program Files\National Instruments\LabVIEW 2020\LabVIEW.exe' `
+            -NativeBitness '64' `
             -LogRoot $logRoot
 
       - name: Classify certification result
@@ -286,7 +278,8 @@ jobs:
             "### Image Contract Certification",
             "- Contract profile: ${{ inputs.contract_profile }}",
             "- Image tag: ${{ inputs.image_tag }}",
-            "- Runner lane: self-hosted-server2019",
+            "- Runner lane: self-hosted-native",
+            "- Native policy check: is_real_server2019=${{ steps.native_os_policy.outputs.is_real_server2019 }}, os_build=${{ steps.native_os_policy.outputs.os_build }}",
             "- Classification: $classification",
             "- Summary path: " + ($(if ([string]::IsNullOrWhiteSpace($summaryPath)) { '<not-found>' } else { $summaryPath }))
           ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

@@ -8,6 +8,10 @@
       "notes": "Intentional split-track override. Host-native contract remains 2020/64=3366 in Tooling/labviewcli-port-contract.json.",
       "directory_to_compile": "C:\\Program Files\\National Instruments\\LabVIEW 2020\\examples\\Arrays",
       "requires_real_server2019": true,
+      "native_allowed_os_builds": [
+        "17763",
+        "26200"
+      ],
       "require_port_listener": true,
       "required_repeat_runs": 2
     },
