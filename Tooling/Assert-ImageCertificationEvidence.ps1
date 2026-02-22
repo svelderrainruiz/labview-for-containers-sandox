@@ -47,6 +47,7 @@ $requiredTop = @(
     'generated_utc',
     'contract_profile',
     'image_tag',
+    'runner_target',
     'runner_fingerprint',
     'verification_metrics',
     'classification',
@@ -62,6 +63,7 @@ Assert-StringNotBlank -Value ([string]$summary.schema_version) -Name 'schema_ver
 Assert-StringNotBlank -Value ([string]$summary.generated_utc) -Name 'generated_utc'
 Assert-StringNotBlank -Value ([string]$summary.contract_profile) -Name 'contract_profile'
 Assert-StringNotBlank -Value ([string]$summary.image_tag) -Name 'image_tag'
+Assert-StringNotBlank -Value ([string]$summary.runner_target) -Name 'runner_target'
 Assert-StringNotBlank -Value ([string]$summary.classification) -Name 'classification'
 
 if (-not [string]::IsNullOrWhiteSpace($ExpectedContractProfile) -and [string]$summary.contract_profile -ne $ExpectedContractProfile) {
@@ -157,8 +159,19 @@ if ([string]$summary.classification -eq 'pass') {
     if ($passCount -ne $runsCompleted) {
         throw "classification=pass requires pass_count == runs_completed. pass_count=$passCount runs_completed=$runsCompleted"
     }
-    if (-not [bool]$summary.promotion_eligible) {
-        throw 'classification=pass requires promotion_eligible=true.'
+    $allowPassWithoutPromotionEligibility = $false
+    if ([string]$summary.runner_target -eq 'self-hosted-server2019') {
+        $isRealServer2019 = $false
+        if ($summary.runner_fingerprint.PSObject.Properties.Name.Contains('is_real_server2019')) {
+            $isRealServer2019 = [bool]$summary.runner_fingerprint.is_real_server2019
+        }
+        if (-not $isRealServer2019) {
+            $allowPassWithoutPromotionEligibility = $true
+        }
+    }
+
+    if (-not [bool]$summary.promotion_eligible -and -not $allowPassWithoutPromotionEligibility) {
+        throw 'classification=pass requires promotion_eligible=true unless running self-hosted-server2019 diagnostics on a non-Server2019 host build.'
     }
 }
 
